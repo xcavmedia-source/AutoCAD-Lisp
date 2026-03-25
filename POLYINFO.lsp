@@ -6,7 +6,8 @@
 ;;; plus the average Length / Width to a single MTEXT object.
 ;;;
 ;;; Length = longer  bounding-box dimension
-;;; Width  = shorter bounding-box dimension
+;;; Width  = explicit polyline width (max of all segment start/end
+;;;          widths) when set; otherwise shorter bounding-box dim
 ;;; Area   = AutoCAD-reported enclosed area
 ;;;
 ;;; Command : POLYINFO
@@ -22,6 +23,29 @@
 ;;; Format a real number using the current drawing unit & precision
 (defun pi:fmt (val)
   (rtos val (getvar "LUNITS") (getvar "LUPREC"))
+)
+
+;;; Return the maximum explicit line-width on an LWPOLYLINE.
+;;; Checks DXF 43 (constant width) first; if zero, scans every
+;;; per-vertex start-width (40) and end-width (41) and returns
+;;; the largest value found.  Returns 0.0 when no width is set.
+(defun pi:maxwidth (ent / ed cw pair maxw)
+  (setq ed  (entget ent)
+        cw  (cdr (assoc 43 ed)))          ; constant width
+  (if (and cw (> cw 0.0))
+    cw
+    (progn
+      (setq maxw 0.0)
+      (foreach pair ed
+        (if (member (car pair) '(40 41))  ; per-vertex start/end widths
+          (if (> (cdr pair) maxw)
+            (setq maxw (cdr pair))
+          )
+        )
+      )
+      maxw
+    )
+  )
 )
 
 ;;; Safely get the active space VLA object (model or paper)
@@ -40,7 +64,7 @@
     (/ *error*
        acadobj doc space
        ss i ent obj
-       minpt maxpt dx dy len wid area
+       minpt maxpt dx dy poly-width len wid area
        total-len total-wid pcount
        avg-len avg-wid
        content ins-pt txtht mtext-obj)
@@ -97,10 +121,23 @@
               dx    (abs (- (nth 0 maxpt) (nth 0 minpt)))
               dy    (abs (- (nth 1 maxpt) (nth 1 minpt))))
 
-        ;;; Assign: longer dimension = Length, shorter = Width
-        (if (>= dx dy)
-          (setq len dx  wid dy)
-          (setq len dy  wid dx)
+        ;;; Check for an explicit polyline line-width.
+        ;;; When the polyline carries varying segment widths the largest
+        ;;; value is used; when no width is set we fall back to the
+        ;;; shorter bounding-box dimension.
+        (setq poly-width (pi:maxwidth ent))
+
+        (if (> poly-width 0.0)
+          ;;; Polyline has an explicit width - use it directly.
+          ;;; Length is the longer bounding-box axis (which already
+          ;;; incorporates the stroke width in the extents).
+          (setq len (max dx dy)
+                wid poly-width)
+          ;;; No explicit width - derive both from bounding box.
+          (if (>= dx dy)
+            (setq len dx  wid dy)
+            (setq len dy  wid dx)
+          )
         )
 
         ;;; AutoCAD-computed enclosed area
