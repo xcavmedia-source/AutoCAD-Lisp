@@ -1,14 +1,17 @@
 ;;; ============================================================
 ;;; POLYINFO.lsp  -  Closed Polyline Measurement Tool
 ;;;
-;;; Selects multiple closed LWPOLYLINEs, calculates the bounding-
-;;; box Length, Width, and Area of each, then writes all results
-;;; plus the average Length / Width to a single MTEXT object.
+;;; Selects multiple closed LWPOLYLINEs and, for each one:
+;;;   - Walks every segment, keeping only perfectly horizontal
+;;;     (same Y) and perfectly vertical (same X) segments.
+;;;     Any segment that runs at an angle is excluded.
+;;;   - Length = longest axis-aligned segment found overall
+;;;   - Width  = longest segment on the perpendicular axis
+;;;   - Area   = AutoCAD-reported enclosed area
+;;;   Length and Width are written in decimal inches.
 ;;;
-;;; Length = longer  bounding-box dimension
-;;; Width  = explicit polyline width (max of all segment start/end
-;;;          widths) when set; otherwise shorter bounding-box dim
-;;; Area   = AutoCAD-reported enclosed area
+;;; A final MTEXT block shows each polyline's results and the
+;;; average Length / Width across all selected polylines.
 ;;;
 ;;; Command : POLYINFO
 ;;;
@@ -20,32 +23,62 @@
 
 ;;; ---- internal helpers ------------------------------------------
 
-;;; Format a real number using the current drawing unit & precision
+;;; Format VALUE as decimal inches, 4 decimal places, with " suffix
+(defun pi:fmtinch (val)
+  (strcat (rtos val 2 4) "\"")
+)
+
+;;; Format VALUE using the current drawing unit/precision (for area)
 (defun pi:fmt (val)
   (rtos val (getvar "LUNITS") (getvar "LUPREC"))
 )
 
-;;; Return the maximum explicit line-width on an LWPOLYLINE.
-;;; Checks DXF 43 (constant width) first; if zero, scans every
-;;; per-vertex start-width (40) and end-width (41) and returns
-;;; the largest value found.  Returns 0.0 when no width is set.
-(defun pi:maxwidth (ent / ed cw pair maxw)
+;;; Return an ordered list of vertex points for an LWPOLYLINE.
+;;; Each point is a (x y z) list read from DXF group code 10.
+(defun pi:getverts (ent / ed pts pair)
   (setq ed  (entget ent)
-        cw  (cdr (assoc 43 ed)))          ; constant width
-  (if (and cw (> cw 0.0))
-    cw
-    (progn
-      (setq maxw 0.0)
-      (foreach pair ed
-        (if (member (car pair) '(40 41))  ; per-vertex start/end widths
-          (if (> (cdr pair) maxw)
-            (setq maxw (cdr pair))
-          )
-        )
-      )
-      maxw
+        pts '())
+  (foreach pair ed
+    (if (= (car pair) 10)
+      (setq pts (append pts (list (cdr pair))))
     )
   )
+  pts
+)
+
+;;; Walk every segment of a closed LWPOLYLINE and return a 2-element
+;;; list: (max-horizontal  max-vertical).
+;;; A segment is horizontal when |dY| < TOL  (only dX matters).
+;;; A segment is vertical   when |dX| < TOL  (only dY matters).
+;;; All other (angled) segments are ignored.
+(defun pi:hvsizes (ent / verts n i p1 p2 dx dy tol max-h max-v seglen)
+  (setq verts (pi:getverts ent)
+        n     (length verts)
+        tol   1.0e-6
+        max-h 0.0
+        max-v 0.0)
+  (setq i 0)
+  (while (< i n)
+    (setq p1     (nth i verts)
+          p2     (nth (rem (1+ i) n) verts)  ; wraps to v0 on last step
+          dx     (abs (- (car  p2) (car  p1)))
+          dy     (abs (- (cadr p2) (cadr p1))))
+    (cond
+      ;;; Horizontal segment (dY ≈ 0)
+      ((< dy tol)
+       (setq seglen dx)
+       (if (> seglen max-h) (setq max-h seglen))
+      )
+      ;;; Vertical segment (dX ≈ 0)
+      ((< dx tol)
+       (setq seglen dy)
+       (if (> seglen max-v) (setq max-v seglen))
+      )
+      ;;; Angled - skip
+    )
+    (setq i (1+ i))
+  )
+  (list max-h max-v)
 )
 
 ;;; Safely get the active space VLA object (model or paper)
@@ -63,8 +96,7 @@
 (defun c:POLYINFO
     (/ *error*
        acadobj doc space
-       ss i ent obj
-       minpt maxpt dx dy poly-width len wid area
+       ss i ent obj hvsizes max-h max-v len wid area
        total-len total-wid pcount
        avg-len avg-wid
        content ins-pt txtht mtext-obj)
@@ -98,8 +130,7 @@
   (setq pcount    0
         total-len 0.0
         total-wid 0.0
-        ;; MTEXT content string - built up incrementally
-        ;; \P = paragraph break (new line) in MTEXT raw text
+        ;; \P = paragraph break (new line) in raw MTEXT content
         content   (strcat
                     "{\\H1.25x;\\L;Polyline Measurements\\l}\\P"
                     "\\P"))
@@ -114,30 +145,16 @@
       (progn
         (setq pcount (1+ pcount))
 
-        ;;; Bounding box gives us the axis-aligned extents
-        (vla-getboundingbox obj 'minpt 'maxpt)
-        (setq minpt (vlax-safearray->list minpt)
-              maxpt (vlax-safearray->list maxpt)
-              dx    (abs (- (nth 0 maxpt) (nth 0 minpt)))
-              dy    (abs (- (nth 1 maxpt) (nth 1 minpt))))
+        ;;; Find longest horizontal and vertical segments.
+        ;;; Angled segments are excluded by pi:hvsizes.
+        (setq hvsizes (pi:hvsizes ent)
+              max-h   (car  hvsizes)   ; longest horizontal segment
+              max-v   (cadr hvsizes))  ; longest vertical   segment
 
-        ;;; Check for an explicit polyline line-width.
-        ;;; When the polyline carries varying segment widths the largest
-        ;;; value is used; when no width is set we fall back to the
-        ;;; shorter bounding-box dimension.
-        (setq poly-width (pi:maxwidth ent))
-
-        (if (> poly-width 0.0)
-          ;;; Polyline has an explicit width - use it directly.
-          ;;; Length is the longer bounding-box axis (which already
-          ;;; incorporates the stroke width in the extents).
-          (setq len (max dx dy)
-                wid poly-width)
-          ;;; No explicit width - derive both from bounding box.
-          (if (>= dx dy)
-            (setq len dx  wid dy)
-            (setq len dy  wid dx)
-          )
+        ;;; Assign Length (longer) and Width (shorter)
+        (if (>= max-h max-v)
+          (setq len max-h  wid max-v)
+          (setq len max-v  wid max-h)
         )
 
         ;;; AutoCAD-computed enclosed area
@@ -151,9 +168,9 @@
         (setq content
               (strcat content
                       "{\\H1.0x;\\L;Polyline #" (itoa pcount) "\\l}\\P"
-                      "  Length  =  " (pi:fmt len)  "\\P"
-                      "  Width   =  " (pi:fmt wid)  "\\P"
-                      "  Area    =  " (pi:fmt area) "\\P"
+                      "  Length  =  " (pi:fmtinch len)  "\\P"
+                      "  Width   =  " (pi:fmtinch wid)  "\\P"
+                      "  Area    =  " (pi:fmt area)      "\\P"
                       "\\P"))
       )
     )
@@ -177,8 +194,8 @@
                 "{\\H1.0x;\\L;--- AVERAGES  ("
                 (itoa pcount) " polyline"
                 (if (= pcount 1) "" "s") ")\\l}\\P"
-                "  Avg Length  =  " (pi:fmt avg-len) "\\P"
-                "  Avg Width   =  " (pi:fmt avg-wid)))
+                "  Avg Length  =  " (pi:fmtinch avg-len) "\\P"
+                "  Avg Width   =  " (pi:fmtinch avg-wid)))
 
   ;;; --- insertion point ------------------------------------------
   (initget 1)  ; no null / no zero input
