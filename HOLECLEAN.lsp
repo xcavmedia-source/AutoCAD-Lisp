@@ -12,11 +12,11 @@
 ;;;
 ;;; Delete rules (applied to every non-host circle):
 ;;;
-;;;   Rule A – Inside host:
+;;;   Rule A - Inside host:
 ;;;     If the circle's diameter is smaller than the host AND
 ;;;     its center lies within the host's radius, it is deleted.
 ;;;
-;;;   Rule B – Outside host, too close:
+;;;   Rule B - Outside host, too close:
 ;;;     If the circle's center is outside every host, the
 ;;;     edge-to-edge gap to the nearest host is computed.
 ;;;     If that gap is less than the minimum edge distance,
@@ -170,7 +170,7 @@
 
 ;;; Return T if record R qualifies for deletion relative to HOSTS.
 ;;; MIN-EDGE is the minimum allowable edge-to-edge gap.
-(defun hc:delete? (r hosts min-edge / pc rc del ph rh d edge)
+(defun hc:should-delete (r hosts min-edge / pc rc del ph rh d edge)
   (setq pc (hc:rec-ctr r) rc (hc:rec-rad r) del nil)
   (foreach host hosts
     (if (not del)
@@ -243,7 +243,7 @@
                       ;; Determine which candidates to delete
                       (setq to-delete '())
                       (foreach rec others
-                        (if (hc:delete? rec hosts min-edge)
+                        (if (hc:should-delete rec hosts min-edge)
                           (setq to-delete (cons rec to-delete))))
 
                       (if (null to-delete)
