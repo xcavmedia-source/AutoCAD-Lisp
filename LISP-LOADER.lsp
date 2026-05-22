@@ -70,7 +70,9 @@
   (if (vl-file-directory-p dir)
     (progn
       (LL:walk dir "")
-      (if *LL:SCAN* (acad-strlsort *LL:SCAN*))
+      (if *LL:SCAN*
+        (vl-sort *LL:SCAN* '(lambda (a b) (< (strcase a T) (strcase b T))))
+      )
     )
   )
 )
