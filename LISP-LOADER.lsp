@@ -39,21 +39,38 @@
   path
 )
 
-;; ── File scanner ─────────────────────────────────────────────────────────────
+;; ── File scanner (recursive) ─────────────────────────────────────────────────
 
-(defun LL:scan-dir (dir / raw result ext)
-  ;; Returns sorted list of loadable filenames, or nil.
-  (setq dir (LL:normalize dir))
-  (if (vl-file-directory-p dir)
-    (progn
-      (setq raw (vl-directory-files dir "*" 1))
-      (foreach f raw
-        (setq ext (strcase (vl-filename-extension f)))
-        (if (member ext '(".LSP" ".FAS" ".VLX" ".MNL"))
-          (setq result (cons f result))
+(defun LL:walk (dir prefix / entry full ext)
+  ;; Accumulates relative paths into *LL:SCAN*.  Called recursively.
+  (foreach entry (vl-directory-files dir "*")
+    (if (not (member entry '("." "..")))
+      (progn
+        (setq full (strcat dir entry))
+        (if (vl-file-directory-p full)
+          ;; Sub-folder: recurse, prepending the folder name to the prefix.
+          (LL:walk (strcat full "\\") (strcat prefix entry "\\"))
+          ;; File: keep if it has a loadable extension.
+          (progn
+            (setq ext (strcase (vl-filename-extension entry)))
+            (if (member ext '(".LSP" ".FAS" ".VLX" ".MNL"))
+              (setq *LL:SCAN* (cons (strcat prefix entry) *LL:SCAN*))
+            )
+          )
         )
       )
-      (if result (acad-strlsort result))
+    )
+  )
+)
+
+(defun LL:scan-dir (dir / )
+  ;; Returns a sorted list of relative paths (e.g. "SubFolder\tool.lsp"), or nil.
+  (setq dir (LL:normalize dir))
+  (setq *LL:SCAN* nil)
+  (if (vl-file-directory-p dir)
+    (progn
+      (LL:walk dir "")
+      (if *LL:SCAN* (acad-strlsort *LL:SCAN*))
     )
   )
 )
