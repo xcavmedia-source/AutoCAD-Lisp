@@ -280,5 +280,5 @@
                             (princ (strcat
                               "\n\n*** WARNING: Block definitions were modified. "
                               "ALL inserts of those blocks are affected. ***")))
-                          ))))))))))
+                          ))))))))))))
   (princ))
