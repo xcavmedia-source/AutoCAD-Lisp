@@ -68,6 +68,38 @@
   (reverse reps)                            ; group 0 first
 )
 
+;;; Parse a comma-separated string of decimal numbers into a list of reals.
+;;; "0.5, 0.75,1.0" -> (0.5 0.75 1.0)
+;;; Returns nil if STR is empty or whitespace only.
+(defun ht:parse-csv (str / parts tok i ch acc result)
+  (setq parts '()  acc ""  i 0)
+  (while (< i (strlen str))
+    (setq ch (substr str (1+ i) 1))
+    (if (= ch ",")
+      (progn
+        (setq tok (vl-string-trim " \t" acc))
+        (if (/= tok "") (setq parts (cons tok parts)))
+        (setq acc "")
+      )
+      (setq acc (strcat acc ch))
+    )
+    (setq i (1+ i))
+  )
+  ;; flush last token
+  (setq tok (vl-string-trim " \t" acc))
+  (if (/= tok "") (setq parts (cons tok parts)))
+  (setq result '())
+  (foreach p parts
+    (setq result (cons (atof p) result))
+  )
+  result
+)
+
+;;; Return T if value V is within TOL of any value in the list EXCL.
+(defun ht:excluded-p (v excl tol)
+  (vl-some '(lambda (x) (<= (abs (- v x)) tol)) excl)
+)
+
 ;;; Index of the entry in REPS that is nearest to value V.
 ;;; Groups are separated by more than TOL, so the nearest centroid
 ;;; unambiguously identifies the row / column V belongs to.
@@ -86,8 +118,8 @@
 ;;; HOLESIZE  -  resize every circle under a threshold diameter
 ;;; ============================================================
 (defun c:HOLESIZE
-    (/ *error* ss thresh newdia newrad
-       i ent obj dia changed skipped)
+    (/ *error* ss thresh newdia newrad excl-str excl
+       i ent obj dia changed skipped excluded)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -113,26 +145,52 @@
   (setq newdia (getreal "\nNew diameter for those circles: "))
   (setq newrad (/ newdia 2.0))
 
+  ;;; --- exclusion list -------------------------------------------
+  ;;; User may press ENTER to skip; otherwise enter diameters
+  ;;; separated by commas, e.g.:  0.5, 0.75, 1.0
+  (princ "\nExclude specific diameters from being changed")
+  (setq excl-str (getstring t
+    "\n  (enter comma-separated values, or ENTER to skip): "))
+  (setq excl (if (= (vl-string-trim " \t" excl-str) "")
+               '()
+               (ht:parse-csv excl-str)))
+  (if excl
+    (progn
+      (princ "\nExcluding diameters: ")
+      (foreach x excl (princ (strcat (ht:fmtinch x) "  ")))
+    )
+  )
+
   ;;; --- apply ----------------------------------------------------
-  (setq i 0  changed 0  skipped 0)
+  ;;; Tolerance for matching an exclusion: 0.0001 drawing units
+  (setq i 0  changed 0  skipped 0  excluded 0)
   (while (< i (sslength ss))
     (setq ent (ssname ss i)
           obj (vlax-ename->vla-object ent)
           dia (* 2.0 (vlax-get-property obj 'Radius)))
-    (if (< dia thresh)
-      (progn
-        (vlax-put-property obj 'Radius newrad)
-        (setq changed (1+ changed))
+    (cond
+      ;;; Diameter matches an exclusion entry - leave it alone
+      ((ht:excluded-p dia excl 0.0001)
+       (setq excluded (1+ excluded))
       )
-      (setq skipped (1+ skipped))
+      ;;; Diameter is under threshold - resize it
+      ((< dia thresh)
+       (vlax-put-property obj 'Radius newrad)
+       (setq changed (1+ changed))
+      )
+      ;;; Diameter is at or above threshold - leave it alone
+      (t
+       (setq skipped (1+ skipped))
+      )
     )
     (setq i (1+ i))
   )
 
   (princ (strcat "\nDone - "
-                 (itoa changed) " circle(s) set to "
+                 (itoa changed)  " circle(s) set to "
                  (ht:fmtinch newdia) " diameter; "
-                 (itoa skipped) " left unchanged."))
+                 (itoa skipped)  " above threshold (unchanged); "
+                 (itoa excluded) " excluded by list (unchanged)."))
   (princ)
 )
 
