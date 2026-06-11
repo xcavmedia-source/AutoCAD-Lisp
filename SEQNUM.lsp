@@ -54,7 +54,12 @@
 ;;; If TAG is "" the first attribute is used, otherwise the
 ;;; attribute whose tag matches TAG (case-insensitive) is used.
 ;;; Returns T when an attribute was written, nil otherwise.
-(defun sb:setblocktext (obj txt tag / atts att done)
+;;;
+;;; NOTE: vla-put-textstring resets a justified attribute's
+;;; alignment point (DXF 11) back to its insertion point, which
+;;; left-shifts centered text.  We capture group 11 first and
+;;; restore it afterward so the original justification is kept.
+(defun sb:setblocktext (obj txt tag / atts att done en ed g11)
   (setq done nil)
   (if (= (vla-get-hasattributes obj) :vlax-true)
     (progn
@@ -65,7 +70,14 @@
                      (= (strcase (vla-get-tagstring att))
                         (strcase tag))))
           (progn
-            (vla-put-textstring att txt)
+            (setq en  (vlax-vla-object->ename att)
+                  g11 (assoc 11 (entget en)))     ; alignment point
+            (vla-put-textstring att txt)          ; change the value
+            (setq ed (entget en))                 ; re-read (11 reset)
+            (if g11
+              (entmod (subst g11 (assoc 11 ed) ed))
+            )
+            (entupd en)
             (setq done t)
           )
         )
