@@ -248,11 +248,16 @@
 ;;;                and move the hole to that exact grid point.
 ;;; ============================================================
 (defun c:HOLEGRID
-    (/ *error* ss xsp ysp
+    (/ *error* acadobj doc space
+       ss xsp ysp
        i ent obj c objs ytol
        all-sorted row0 row1 ax ay
        raw-stagger stagger staggered
-       ox oy row col nx ny moved)
+       ox oy row col nx ny
+       hole-rad hole-layer
+       occupied max-row all-cols
+       ci r fill-x fill-y new-obj
+       moved added)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -261,6 +266,14 @@
     )
     (princ)
   )
+
+  ;;; --- VLA setup ------------------------------------------------
+  (setq acadobj (vlax-get-acad-object)
+        doc     (vla-get-activedocument acadobj)
+        space   (if (and (= (getvar "TILEMODE") 0)
+                         (= (getvar "CVPORT") 1))
+                  (vla-get-paperspace doc)
+                  (vla-get-modelspace doc)))
 
   ;;; --- selection ------------------------------------------------
   (princ "\nSelect holes (circles) to re-grid (ENTER when done): ")
@@ -283,15 +296,17 @@
     (setq i (1+ i))
   )
 
+  ;;; Read radius and layer from the first hole so new circles match.
+  (setq hole-rad   (vlax-get-property (car (car objs)) 'Radius)
+        hole-layer (vlax-get-property (car (car objs)) 'Layer))
+
   ;;; --- find anchor: highest Y, then leftmost X -----------------
-  ;;; Sort all holes top-to-bottom (desc Y), left-to-right (asc X).
   (setq all-sorted
         (vl-sort objs '(lambda (a b)
                          (if (= (caddr a) (caddr b))
                            (< (cadr a) (cadr b))
                            (> (caddr a) (caddr b))))))
 
-  ;;; Collect row 0 = all holes within ytol of the topmost Y.
   (setq ytol (* ysp 0.45)
         row0  (list (car all-sorted)))
   (foreach o (cdr all-sorted)
@@ -299,17 +314,12 @@
       (setq row0 (cons o row0))
     )
   )
-  ;;; Anchor = leftmost hole of row 0.
   (setq row0 (vl-sort row0 '(lambda (a b) (< (cadr a) (cadr b))))
         ax   (cadr  (car row0))
         ay   (caddr (car row0)))
 
   ;;; --- stagger detection ----------------------------------------
-  ;;; Collect the first hole below row 0 that sits ~ysp below ax.
-  ;;; Compare its X to ax: if ~xsp/2 different → staggered pattern.
-  (setq row1       '()
-        staggered  nil
-        stagger    0.0)
+  (setq row1 '()  staggered nil  stagger 0.0)
   (foreach o all-sorted
     (if (< (abs (- (caddr o) (- ay ysp))) ytol)
       (setq row1 (cons o row1))
@@ -319,7 +329,6 @@
     (progn
       (setq row1        (vl-sort row1 '(lambda (a b) (< (cadr a) (cadr b))))
             raw-stagger (- (cadr (car row1)) ax))
-      ;;; Accept stagger within 25% tolerance of xsp/2
       (if (< (abs (- (abs raw-stagger) (* xsp 0.5))) (* xsp 0.25))
         (setq staggered t
               stagger   (if (>= raw-stagger 0.0) (* xsp 0.5) (- (* xsp 0.5))))
@@ -334,17 +343,9 @@
   )
 
   ;;; --- nearest-grid-point placement ----------------------------
-  ;;; Every hole independently finds its closest ideal position.
-  ;;;
-  ;;;   row = round( (ay - oy) / ysp )
-  ;;;
-  ;;;   Even row (or straight):  col = round( (ox - ax)        / xsp )
-  ;;;   Odd  row (staggered):    col = round( (ox - ax - xsp/2) / xsp )
-  ;;;
-  ;;;   nx = ax + col*xsp         (even / straight)
-  ;;;      = ax + xsp/2 + col*xsp (odd, staggered)
-  ;;;   ny = ay - row * ysp
-  (setq moved 0)
+  ;;; Build OCCUPIED = list of (row . col) pairs as we go,
+  ;;; so the fill pass knows which grid slots already exist.
+  (setq moved 0  occupied '()  max-row 0)
   (foreach o objs
     (setq obj (car o)
           ox  (cadr  o)
@@ -358,10 +359,44 @@
     )
     (setq ny (- ay (* row ysp)))
     (vlax-put-property obj 'Center (vlax-3d-point (list nx ny 0.0)))
+    (setq occupied (cons (cons row col) occupied))
+    (if (> row max-row) (setq max-row row))
     (setq moved (1+ moved))
   )
 
-  (princ (strcat "\nDone - " (itoa moved) " hole(s) snapped to grid  ("
+  ;;; --- fill short columns --------------------------------------
+  ;;; Every column that exists (has at least one hole) must have
+  ;;; a hole in every row from 0 to MAX-ROW.  Add new circles on
+  ;;; the same layer and with the same radius wherever one is missing.
+  (setq all-cols '()  added 0)
+  (foreach pair occupied
+    (if (not (member (cdr pair) all-cols))
+      (setq all-cols (cons (cdr pair) all-cols))
+    )
+  )
+  (foreach ci all-cols
+    (setq r 0)
+    (while (<= r max-row)
+      (if (not (member (cons r ci) occupied))
+        (progn
+          (if (and staggered (= (rem (abs r) 2) 1))
+            (setq fill-x (+ ax stagger (* ci xsp)))
+            (setq fill-x (+ ax (* ci xsp)))
+          )
+          (setq fill-y   (- ay (* r ysp))
+                new-obj  (vla-addcircle space
+                            (vlax-3d-point (list fill-x fill-y 0.0))
+                            hole-rad))
+          (vlax-put-property new-obj 'Layer hole-layer)
+          (setq added (1+ added))
+        )
+      )
+      (setq r (1+ r))
+    )
+  )
+
+  (princ (strcat "\nDone - " (itoa moved) " hole(s) snapped to grid, "
+                 (itoa added) " hole(s) added to fill short columns  ("
                  (ht:fmtinch xsp) " x " (ht:fmtinch ysp) " spacing"
                  (if staggered ", staggered)." ").")))
   (princ)
