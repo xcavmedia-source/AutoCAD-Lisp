@@ -231,21 +231,28 @@
 ;;;              handles both straight and staggered patterns
 ;;; ============================================================
 ;;;
-;;; Core strategy: never trust absolute X positions to assign columns.
-;;; Instead, sort each row's holes left-to-right by their current X
-;;; and assign column indices 0,1,2,... in that order.  This is
-;;; robust even when holes are far off their ideal positions.
+;;; Strategy: nearest-grid-point.
+;;;   Each hole independently snaps to the closest ideal grid
+;;;   position derived from the anchor.  No clustering is used
+;;;   for placement, so Y drift inside a row cannot scatter holes
+;;;   across wrong rows.
 ;;;
-;;; Stagger detection: compare the leftmost-hole X of row 0 vs row 1.
-;;; If they differ by ~xsp/2 the pattern is staggered and odd rows
-;;; are offset by exactly xsp/2 from even rows in the output.
+;;;   1. Anchor  = hole with the highest Y; ties broken by min X.
+;;;   2. Stagger = detected by comparing the leftmost-X of the
+;;;                first two Y-groups.  If they differ by ~xsp/2
+;;;                the layout is treated as a staggered (brick)
+;;;                pattern and odd rows are offset by xsp/2.
+;;;   3. Place   = for every hole compute
+;;;                  row = round((ay - oy) / ysp)
+;;;                  col = round((ox - ax [- xsp/2 if odd row]) / xsp)
+;;;                and move the hole to that exact grid point.
 ;;; ============================================================
 (defun c:HOLEGRID
     (/ *error* ss xsp ysp
-       i ent obj c objs ys ytol rowreps nrows
-       ax ay row row-holes sorted-row
-       row0-sorted row1-sorted stagger staggered
-       col nx ny moved)
+       i ent obj c objs ytol
+       all-sorted row0 row1 ax ay
+       raw-stagger stagger staggered
+       ox oy row col nx ny moved)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -267,60 +274,55 @@
   (setq ysp (ht:getsp "\nY spacing, hole centre to hole centre" '*ht:last-ysp*))
 
   ;;; --- gather centres -------------------------------------------
-  (setq i 0  objs '()  ys '())
+  (setq i 0  objs '())
   (while (< i (sslength ss))
     (setq ent (ssname ss i)
           obj (vlax-ename->vla-object ent)
           c   (ht:center obj)
-          objs (cons (list obj (car c) (cadr c)) objs)
-          ys   (cons (cadr c) ys))
+          objs (cons (list obj (car c) (cadr c)) objs))
     (setq i (1+ i))
   )
 
-  ;;; --- cluster rows by Y ----------------------------------------
-  ;;; Only Y needs clustering; X assignment is done by sort order.
-  ;;; Tolerance 45% of pitch handles misalignment up to nearly half-pitch.
-  (setq ytol    (* ysp 0.45)
-        rowreps (ht:clusters ys t ytol)   ; top row = index 0
-        nrows   (length rowreps))
+  ;;; --- find anchor: highest Y, then leftmost X -----------------
+  ;;; Sort all holes top-to-bottom (desc Y), left-to-right (asc X).
+  (setq all-sorted
+        (vl-sort objs '(lambda (a b)
+                         (if (= (caddr a) (caddr b))
+                           (< (cadr a) (cadr b))
+                           (> (caddr a) (caddr b))))))
 
-  (if (< nrows 1)
-    (progn (princ "\nCould not detect any rows - command cancelled.") (exit))
+  ;;; Collect row 0 = all holes within ytol of the topmost Y.
+  (setq ytol (* ysp 0.45)
+        row0  (list (car all-sorted)))
+  (foreach o (cdr all-sorted)
+    (if (< (abs (- (caddr o) (caddr (car row0)))) ytol)
+      (setq row0 (cons o row0))
+    )
   )
-
-  ;;; --- sort each row's holes left-to-right ----------------------
-  ;;; row0-sorted, row1-sorted used for stagger detection.
-  ;;; All rows processed in the placement loop below.
-  (defun ht:holes-in-row (ri)
-    (vl-sort
-      (vl-remove-if-not
-        '(lambda (o) (= ri (ht:nearest-index (caddr o) rowreps)))
-        objs)
-      '(lambda (a b) (< (cadr a) (cadr b))))   ; sort by X
-  )
-
-  (setq row0-sorted (ht:holes-in-row 0)
-        row1-sorted (if (>= nrows 2) (ht:holes-in-row 1) '()))
-
-  ;;; --- find anchor: left-most hole of row 0 --------------------
-  (setq ax (cadr  (car row0-sorted))
-        ay (caddr (car row0-sorted)))
+  ;;; Anchor = leftmost hole of row 0.
+  (setq row0 (vl-sort row0 '(lambda (a b) (< (cadr a) (cadr b))))
+        ax   (cadr  (car row0))
+        ay   (caddr (car row0)))
 
   ;;; --- stagger detection ----------------------------------------
-  ;;; Compare the X of each row's leftmost hole.
-  ;;; Accept as staggered when the offset is within 20% of xsp/2.
-  ;;; Snap to exactly ±xsp/2 so the output is a perfect pattern.
-  (setq staggered nil  stagger 0.0)
-  (if row1-sorted
+  ;;; Collect the first hole below row 0 that sits ~ysp below ax.
+  ;;; Compare its X to ax: if ~xsp/2 different → staggered pattern.
+  (setq row1       '()
+        staggered  nil
+        stagger    0.0)
+  (foreach o all-sorted
+    (if (< (abs (- (caddr o) (- ay ysp))) ytol)
+      (setq row1 (cons o row1))
+    )
+  )
+  (if row1
     (progn
-      (setq stagger (- (cadr (car row1-sorted)) ax))
-      (if (< (abs (- (abs stagger) (* xsp 0.5))) (* xsp 0.2))
-        (progn
-          (setq staggered t
-                stagger   (if (>= stagger 0.0)
-                            (* xsp 0.5)
-                            (* xsp -0.5)))
-        )
+      (setq row1        (vl-sort row1 '(lambda (a b) (< (cadr a) (cadr b))))
+            raw-stagger (- (cadr (car row1)) ax))
+      ;;; Accept stagger within 25% tolerance of xsp/2
+      (if (< (abs (- (abs raw-stagger) (* xsp 0.5))) (* xsp 0.25))
+        (setq staggered t
+              stagger   (if (>= raw-stagger 0.0) (* xsp 0.5) (- (* xsp 0.5))))
       )
     )
   )
@@ -331,35 +333,37 @@
     (princ "\nStraight grid pattern.")
   )
 
-  ;;; --- reposition every hole ------------------------------------
-  ;;; For each row, iterate its holes in left-to-right order.
-  ;;; Column index = position in that sorted list (0, 1, 2, ...).
-  ;;; Even rows (0,2,4...): nx = ax + col * xsp
-  ;;; Odd  rows (1,3,5...): nx = ax + stagger + col * xsp
-  ;;; All  rows:            ny = ay - row * ysp
-  (setq moved 0  row 0)
-  (while (< row nrows)
-    (setq sorted-row (ht:holes-in-row row)
-          col        0)
-    (foreach o sorted-row
-      (setq obj (car o))
-      (if (and staggered (= (rem row 2) 1))
-        (setq nx (+ ax stagger (* col xsp)))
-        (setq nx (+ ax         (* col xsp)))
-      )
-      (setq ny (- ay (* row ysp)))
-      (vlax-put-property obj 'Center (vlax-3d-point (list nx ny 0.0)))
-      (setq col   (1+ col)
-            moved (1+ moved))
+  ;;; --- nearest-grid-point placement ----------------------------
+  ;;; Every hole independently finds its closest ideal position.
+  ;;;
+  ;;;   row = round( (ay - oy) / ysp )
+  ;;;
+  ;;;   Even row (or straight):  col = round( (ox - ax)        / xsp )
+  ;;;   Odd  row (staggered):    col = round( (ox - ax - xsp/2) / xsp )
+  ;;;
+  ;;;   nx = ax + col*xsp         (even / straight)
+  ;;;      = ax + xsp/2 + col*xsp (odd, staggered)
+  ;;;   ny = ay - row * ysp
+  (setq moved 0)
+  (foreach o objs
+    (setq obj (car o)
+          ox  (cadr  o)
+          oy  (caddr o)
+          row (ht:round (/ (- ay oy) ysp)))
+    (if (and staggered (= (rem (abs row) 2) 1))
+      (setq col (ht:round (/ (- ox ax stagger) xsp))
+            nx  (+ ax stagger (* col xsp)))
+      (setq col (ht:round (/ (- ox ax) xsp))
+            nx  (+ ax (* col xsp)))
     )
-    (setq row (1+ row))
+    (setq ny (- ay (* row ysp)))
+    (vlax-put-property obj 'Center (vlax-3d-point (list nx ny 0.0)))
+    (setq moved (1+ moved))
   )
 
-  (princ (strcat "\nDone - " (itoa moved) " hole(s) re-gridded to "
-                 (ht:fmtinch xsp) " x " (ht:fmtinch ysp)
-                 " centre spacing across "
-                 (itoa nrows) " row(s)"
-                 (if staggered " (staggered)." ".")))
+  (princ (strcat "\nDone - " (itoa moved) " hole(s) snapped to grid  ("
+                 (ht:fmtinch xsp) " x " (ht:fmtinch ysp) " spacing"
+                 (if staggered ", staggered)." ").")))
   (princ)
 )
 
