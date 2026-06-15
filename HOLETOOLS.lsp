@@ -15,6 +15,9 @@
 ;;;     groups every hole into rows and columns, and snaps each
 ;;;     hole to a perfectly regular grid built off that corner
 ;;;     hole, working in the +X (right) and -Y (down) directions.
+;;;     Both straight and staggered (brick-pattern) hole layouts
+;;;     are detected and handled automatically.  The last X and Y
+;;;     spacing values are remembered for the session.
 ;;;
 ;;; Typical workflow:
 ;;;   1)  HOLESIZE  - normalise all the small holes to one diameter
@@ -195,16 +198,44 @@
 )
 
 
+;;; Round REAL value X to the nearest integer (returns an integer).
+(defun ht:round (x)
+  (fix (+ x (if (>= x 0.0) 0.5 -0.5)))
+)
+
+;;; Prompt for a positive distance with an optional remembered default.
+;;; PROMPT  - string shown to user
+;;; LASTVAR - symbol of the global variable holding the last value (may be nil)
+;;; Returns the value chosen.
+(defun ht:getsp (prompt lastvar / val defval promptstr)
+  (setq defval (eval lastvar))
+  (if defval
+    (progn
+      (setq promptstr (strcat prompt " [" (rtos defval 2 4) "]: "))
+      (initget (+ 2 4))   ; no zero, no negative; nil (Enter) = use default
+      (setq val (getreal promptstr))
+      (if (null val) (setq val defval))
+    )
+    (progn
+      (initget (+ 1 2 4)) ; no null, no zero, no negative
+      (setq val (getreal (strcat prompt ": ")))
+    )
+  )
+  (set lastvar val)
+  val
+)
+
+
 ;;; ============================================================
 ;;; HOLEGRID  -  snap selected holes onto a regular X / Y grid
+;;;              handles both straight and staggered patterns
 ;;; ============================================================
 (defun c:HOLEGRID
     (/ *error* ss xsp ysp
-       i ent obj c objs xs ys
-       xtol ytol colreps rowreps
-       ax ay arow acol row col
-       anchorobj anchorrow anchorcol bestkey key
-       nx ny moved)
+       i ent obj c objs ys ytol rowreps
+       ax ay anchorrow row
+       row0xs row1xs min0 min1 stagger staggered
+       col nx ny moved)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -221,58 +252,97 @@
     (progn (princ "\nNothing selected - command cancelled.") (exit))
   )
 
-  ;;; --- spacing --------------------------------------------------
-  (initget (+ 1 2 4))
-  (setq xsp (getdist "\nX spacing, hole centre to hole centre: "))
-  (initget (+ 1 2 4))
-  (setq ysp (getdist "\nY spacing, hole centre to hole centre: "))
+  ;;; --- spacing (remembers last values) --------------------------
+  (setq xsp (ht:getsp "\nX spacing, hole centre to hole centre" '*ht:last-xsp*))
+  (setq ysp (ht:getsp "\nY spacing, hole centre to hole centre" '*ht:last-ysp*))
 
   ;;; --- gather centres -------------------------------------------
-  (setq i 0  objs '()  xs '()  ys '())
+  (setq i 0  objs '()  ys '())
   (while (< i (sslength ss))
     (setq ent (ssname ss i)
           obj (vlax-ename->vla-object ent)
           c   (ht:center obj)
           objs (cons (list obj (car c) (cadr c)) objs)
-          xs   (cons (car c)  xs)
           ys   (cons (cadr c) ys))
     (setq i (1+ i))
   )
 
-  ;;; --- build row / column clusters ------------------------------
-  ;;; A hole belongs to a row/column when it sits within half the
-  ;;; target spacing of its neighbours - tolerant of the current
-  ;;; (slightly wrong) spacing while keeping rows and columns apart.
-  (setq xtol    (* xsp 0.5)
-        ytol    (* ysp 0.5)
-        colreps (ht:clusters xs nil xtol)    ; left -> right
-        rowreps (ht:clusters ys t   ytol))   ; top  -> bottom
+  ;;; --- cluster rows by Y ----------------------------------------
+  ;;; Tolerance = half the Y pitch; keeps rows distinct while
+  ;;; tolerating any current misalignment less than half a pitch.
+  (setq ytol    (* ysp 0.45)
+        rowreps (ht:clusters ys t ytol))   ; top row = index 0
 
-  ;;; --- find the anchor: top-most (row 0), then left-most --------
-  (setq anchorobj nil  bestkey nil)
+  (if (< (length rowreps) 1)
+    (progn (princ "\nCould not detect any rows - command cancelled.") (exit))
+  )
+
+  ;;; --- find anchor: top-most row, left-most hole in that row ----
+  ;;; Also collect X lists for row 0 and row 1 (stagger detection).
+  (setq ax nil  ay nil  anchorrow 0
+        row0xs '()  row1xs '())
   (foreach o objs
-    (setq row (ht:nearest-index (caddr o) rowreps)   ; from Y
-          col (ht:nearest-index (cadr  o) colreps))   ; from X
-    ;; key sorts row first (smaller = higher), then column (smaller = lefter)
-    (setq key (+ (* row 1000000) col))
-    (if (or (null bestkey) (< key bestkey))
-      (setq bestkey key  anchorobj o  anchorrow row  anchorcol col)
+    (setq row (ht:nearest-index (caddr o) rowreps))
+    (cond
+      ((= row 0) (setq row0xs (cons (cadr o) row0xs)))
+      ((= row 1) (setq row1xs (cons (cadr o) row1xs)))
+    )
+    ;;; Track the left-most hole in row 0 as the anchor.
+    (if (= row 0)
+      (if (or (null ax) (< (cadr o) ax))
+        (setq ax (cadr o)  ay (caddr o))
+      )
     )
   )
 
-  ;;; The anchor hole stays exactly where it is; everything else is
-  ;;; placed relative to it using its row/column grid indices.
-  (setq ax (cadr  anchorobj)
-        ay (caddr anchorobj))
+  ;;; --- stagger detection ----------------------------------------
+  ;;; Compare the minimum X of row 0 vs row 1.
+  ;;; If they differ by ~xsp/2 the layout is staggered (brick pattern).
+  (setq staggered nil  stagger 0.0)
+  (if (and row0xs row1xs)
+    (progn
+      (setq min0 (apply 'min row0xs)
+            min1 (apply 'min row1xs))
+      ;;; stagger = how far row 1's left edge is shifted from row 0's
+      (setq stagger (- min1 min0))
+      ;;; Accept as staggered if the shift is within 20% of xsp/2
+      (if (< (abs (- (abs stagger) (* xsp 0.5))) (* xsp 0.2))
+        (setq staggered t)
+      )
+    )
+  )
+
+  (if staggered
+    (princ (strcat "\nStaggered pattern detected (offset "
+                   (ht:fmtinch (abs stagger)) ")."))
+    (princ "\nStraight grid pattern.")
+  )
 
   ;;; --- reposition every hole ------------------------------------
+  ;;; Anchor (ax, ay) is row 0's left-most hole and does not move.
+  ;;; For straight grids:   nx = ax + col * xsp  (col = nearest integer)
+  ;;; For staggered grids:  even rows same as straight;
+  ;;;                       odd rows shifted by STAGGER from even rows.
   (setq moved 0)
   (foreach o objs
     (setq obj (car o)
-          row (ht:nearest-index (caddr o) rowreps)
-          col (ht:nearest-index (cadr  o) colreps)
-          nx  (+ ax (* (- col anchorcol) xsp))
-          ny  (- ay (* (- row anchorrow) ysp)))
+          row (ht:nearest-index (caddr o) rowreps))
+
+    (if staggered
+      ;;; Even rows align with anchor; odd rows are shifted by STAGGER.
+      (if (= (rem row 2) 0)
+        (setq col (ht:round (/ (- (cadr o) ax) xsp))
+              nx  (+ ax (* col xsp)))
+        (setq col (ht:round (/ (- (cadr o) ax stagger) xsp))
+              nx  (+ ax stagger (* col xsp)))
+      )
+      ;;; Straight grid: every row shares the same column positions.
+      (setq col (ht:round (/ (- (cadr o) ax) xsp))
+            nx  (+ ax (* col xsp)))
+    )
+
+    (setq ny (- ay (* row ysp)))
+
     (vlax-put-property obj 'Center
       (vlax-3d-point (list nx ny 0.0)))
     (setq moved (1+ moved))
@@ -281,15 +351,15 @@
   (princ (strcat "\nDone - " (itoa moved) " hole(s) re-gridded to "
                  (ht:fmtinch xsp) " x " (ht:fmtinch ysp)
                  " centre spacing across "
-                 (itoa (length rowreps)) " row(s) and "
-                 (itoa (length colreps)) " column(s)."))
+                 (itoa (length rowreps)) " row(s)"
+                 (if staggered " (staggered)." ".")))
   (princ)
 )
 
 
 (princ "\nHOLETOOLS.lsp loaded.")
 (princ "\n  HOLESIZE  - resize circles under a threshold diameter")
-(princ "\n  HOLEGRID  - snap holes onto a regular X / Y grid")
+(princ "\n  HOLEGRID  - snap holes onto a regular X / Y grid (straight or staggered)")
 (princ)
 
 ;;; ============================================================ EOF
