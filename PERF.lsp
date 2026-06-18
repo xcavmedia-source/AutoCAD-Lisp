@@ -20,19 +20,23 @@
 ;;;   AND across sessions via the registry).  When run again you can
 ;;;   [Continue] with the stored pattern or [Redefine] it.
 ;;;
-;;;   Fill area is acquired either by selecting a closed LWPOLYLINE
-;;;   boundary, or by picking the lower-left and upper-right corners
-;;;   of a rectangular window.
+;;;   Fill area is acquired either by:
+;;;     - selecting ANY closed boundary (polyline w/ arcs, circle,
+;;;       ellipse, spline, region-edge polyline ...), or
+;;;     - picking the lower-left and upper-right corners of a window.
 ;;;
 ;;;   The pattern is centered in the boundary and NO hole is allowed
 ;;;   to cross outside it.
 ;;;
-;;;   Orientation check (staggered 30/60 patterns only):
+;;;   Angled boundary: if the boundary has slanted edges the command
+;;;   offers to ALIGN the perforation rows to a boundary edge you
+;;;   pick, so the pattern follows that angle.
+;;;
+;;;   Orientation check (staggered 30/60 patterns, axis-aligned only):
 ;;;   The continuous STRAIGHT rows should run along the LONGEST side
 ;;;   of the boundary, leaving the staggered edge on the short side.
-;;;   If the straight rows would land on the short side the command
-;;;   PAUSES, explains why, and offers:
-;;;       [Continue] - override and keep the current orientation
+;;;   If they would land on the short side the command PAUSES with:
+;;;       [Continue] - override, keep the current orientation
 ;;;       [Fix]      - automatically swap 30 <-> 60 to reorient
 ;;;
 ;;; Command : PERF
@@ -42,12 +46,8 @@
 (vl-load-com)
 
 ;;; ---- persistent setting defaults --------------------------------
-;;; Held in globals during a session; mirrored to the registry so
-;;; the pattern survives between drawings.
 (setq *perf-cfgroot* "AppData/PerfPattern/")
 
-;;; Read all stored settings from the registry into the globals
-;;; (only when the globals are not already populated).
 (defun pf:loadcfg ( / g)
   (if (null *perf-shape*)
     (progn
@@ -61,7 +61,6 @@
   (princ)
 )
 
-;;; Write the current globals back to the registry.
 (defun pf:savecfg ()
   (setcfg (strcat *perf-cfgroot* "Shape")   *perf-shape*)
   (setcfg (strcat *perf-cfgroot* "Size")    (rtos *perf-size* 2 8))
@@ -71,45 +70,65 @@
   (princ)
 )
 
-;;; True when a complete pattern is already stored.
 (defun pf:havecfg ()
   (and *perf-shape* *perf-size* *perf-spacing* *perf-angle*)
 )
 
 ;;; ---- geometry helpers -------------------------------------------
 
-;;; Point-in-polygon test (ray casting).  PT is (x y ..),
-;;; POLY is a list of (x y) points.  Returns T when inside.
+;;; Point-in-polygon test (ray casting). PT is (x y ..), POLY a list
+;;; of (x y) points.  Returns T when inside.
 (defun pf:ptinpoly (pt poly / x y n i j xi yi xj yj inside)
   (setq x (car pt)  y (cadr pt)
-        n (length poly)
-        inside nil
-        i 0  j (1- n))
+        n (length poly)  inside nil  i 0  j (1- n))
   (while (< i n)
     (setq xi (car (nth i poly)) yi (cadr (nth i poly))
           xj (car (nth j poly)) yj (cadr (nth j poly)))
     (if (and (not (eq (> yi y) (> yj y)))
              (< x (+ (/ (* (- xj xi) (- y yi)) (- yj yi)) xi)))
-      (setq inside (not inside))
-    )
-    (setq j i  i (1+ i))
-  )
+      (setq inside (not inside)))
+    (setq j i  i (1+ i)))
   inside
 )
 
-;;; Return (minx miny maxx maxy) bounding box of a point list.
+;;; T when every point of PTS lies inside POLY.  (Explicit loop -
+;;; avoids vl-every / (function (lambda ...)) which is unreliable
+;;; on some LISP builds and caused a "bad function" error.)
+(defun pf:allinside (pts poly / ok)
+  (setq ok T)
+  (while (and ok pts)
+    (if (not (pf:ptinpoly (car pts) poly)) (setq ok nil))
+    (setq pts (cdr pts)))
+  ok
+)
+
+;;; (minx miny maxx maxy) bounding box of a (x y) point list.
 (defun pf:bbox (pts / minx miny maxx maxy)
-  (setq minx (car  (car pts))  maxx minx
-        miny (cadr (car pts))  maxy miny)
+  (setq minx (car (car pts)) maxx minx
+        miny (cadr (car pts)) maxy miny)
   (foreach p pts
-    (setq minx (min minx (car  p))  maxx (max maxx (car  p))
-          miny (min miny (cadr p))  maxy (max maxy (cadr p)))
-  )
+    (setq minx (min minx (car p))  maxx (max maxx (car p))
+          miny (min miny (cadr p)) maxy (max maxy (cadr p))))
   (list minx miny maxx maxy)
 )
 
-;;; Local hole vertices (row-aligned frame, centered on origin) as a
-;;; list of (x y) points.  Returns NIL for a circle (drawn directly).
+;;; Distance from point P to segment A-B (all (x y)).
+(defun pf:segdist (p a b / ax ay bx by px py dx dy l2 tt qx qy)
+  (setq ax (car a) ay (cadr a) bx (car b) by (cadr b)
+        px (car p) py (cadr p)
+        dx (- bx ax) dy (- by ay)
+        l2 (+ (* dx dx) (* dy dy)))
+  (if (<= l2 1e-12)
+    (distance (list px py) (list ax ay))
+    (progn
+      (setq tt (/ (+ (* (- px ax) dx) (* (- py ay) dy)) l2)
+            tt (max 0.0 (min 1.0 tt))
+            qx (+ ax (* tt dx)) qy (+ ay (* tt dy)))
+      (sqrt (+ (* (- px qx) (- px qx)) (* (- py qy) (- py qy))))))
+)
+
+;;; Local hole vertices (row-aligned frame, centered on origin).
+;;; NIL for a circle (drawn directly).
 (defun pf:localverts (shape size size2 / h hw hh hd r ang pts k)
   (cond
     ((= shape "Circle") nil)
@@ -117,14 +136,13 @@
      (setq h (* 0.5 size))
      (list (list (- h) (- h)) (list h (- h)) (list h h) (list (- h) h)))
     ((= shape "Rectangle")
-     (setq hw (* 0.5 size)  hh (* 0.5 size2))
+     (setq hw (* 0.5 size) hh (* 0.5 size2))
      (list (list (- hw) (- hh)) (list hw (- hh)) (list hw hh) (list (- hw) hh)))
     ((= shape "Diamond")
      (setq hd (* 0.5 size))
      (list (list hd 0.0) (list 0.0 hd) (list (- hd) 0.0) (list 0.0 (- hd))))
     ((= shape "Hexagon")
-     ;; size = across flats -> circumradius R = F / sqrt(3)
-     (setq r (/ size (sqrt 3.0))  pts '()  k 0)
+     (setq r (/ size (sqrt 3.0)) pts '() k 0)
      (while (< k 6)
        (setq ang (* k (/ pi 3.0)))
        (setq pts (cons (list (* r (cos ang)) (* r (sin ang))) pts))
@@ -133,7 +151,6 @@
   )
 )
 
-;;; Circumradius of a hole - used as a cushion when bounding the lattice.
 (defun pf:circumr (shape size size2)
   (cond
     ((= shape "Circle")    (* 0.5 size))
@@ -145,21 +162,16 @@
   )
 )
 
-;;; Lattice description for an angle keyword.
-;;; Returns (Ux Uy Vx Vy rowAngle) where U is the in-row step,
-;;; V the row-to-row step and rowAngle the direction holes align to.
+;;; Lattice description (Ux Uy Vx Vy rowAngle) for an angle keyword.
+;;; U = in-row step, V = row-to-row step, rowAngle = hole alignment.
 (defun pf:lattice (angle s / c s60 c60)
-  (setq c   (* s (cos (/ pi 4.0)))   ; S*cos45 = S*sin45
-        s60 (* s (sin (/ pi 3.0)))   ; S*sin60 = S*0.8660
-        c60 (* s 0.5))               ; S*cos60 = S*0.5
+  (setq c (* s (cos (/ pi 4.0)))
+        s60 (* s (sin (/ pi 3.0)))
+        c60 (* s 0.5))
   (cond
-    ;; square grid, rows along X
     ((= angle "Straight") (list s 0.0  0.0 s  0.0))
-    ;; square grid rotated 45 (diamond layout)
     ((= angle "45")       (list c c  (- c) c  (/ pi 4.0)))
-    ;; staggered, straight rows along X
     ((= angle "60")       (list s 0.0  c60 s60  0.0))
-    ;; staggered, straight rows along Y (90 deg rotation of the 60 pattern)
     ((= angle "30")       (list 0.0 s  s60 c60  (/ pi 2.0)))
     (T (list s 0.0  0.0 s  0.0))
   )
@@ -167,59 +179,57 @@
 
 ;;; ---- drawing -----------------------------------------------------
 
-;;; Create one hole entity centered at (cx cy).
-(defun pf:drawhole (shape size size2 cx cy rowang lverts / ca sa verts)
+(defun pf:xform (lx ly cx cy ca sa)
+  (list (+ cx (- (* lx ca) (* ly sa)))
+        (+ cy (+ (* lx sa) (* ly ca))))
+)
+
+(defun pf:drawhole (shape size size2 cx cy rowang lverts / ca sa verts pr lst)
   (if (= shape "Circle")
-    (entmake (list '(0 . "CIRCLE")
-                   (list 10 cx cy 0.0)
-                   (cons 40 (* 0.5 size))))
+    (entmake (list '(0 . "CIRCLE") (list 10 cx cy 0.0) (cons 40 (* 0.5 size))))
     (progn
-      (setq ca (cos rowang)  sa (sin rowang))
-      (setq verts
-            (mapcar
-              (lambda (p / lx ly)
-                (setq lx (car p)  ly (cadr p))
-                (list (+ cx (- (* lx ca) (* ly sa)))
-                      (+ cy (+ (* lx sa) (* ly ca)))))
-              lverts))
-      (entmake
-        (append
-          (list '(0 . "LWPOLYLINE")
-                '(100 . "AcDbEntity")
-                '(100 . "AcDbPolyline")
-                (cons 90 (length verts))
-                '(70 . 1))                 ; closed
-          (mapcar (lambda (p) (cons 10 p)) verts)))
-    )
+      (setq ca (cos rowang) sa (sin rowang) verts '())
+      (foreach p lverts
+        (setq verts (cons (pf:xform (car p) (cadr p) cx cy ca sa) verts)))
+      (setq verts (reverse verts)
+            lst (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity")
+                      '(100 . "AcDbPolyline") (cons 90 (length verts)) '(70 . 1)))
+      (foreach p verts (setq lst (append lst (list (cons 10 p)))))
+      (entmake lst))
   )
 )
 
-;;; All test points for the hole footprint at (cx cy); every one must
-;;; lie inside the boundary or the hole is rejected.
+;;; Footprint test points for the hole at (cx cy).
 (defun pf:footprint (shape size cx cy rowang lverts / r pts a k ca sa)
   (if (= shape "Circle")
     (progn
-      (setq r (* 0.5 size)  pts '()  k 0)
+      (setq r (* 0.5 size) pts '() k 0)
       (while (< k 16)
         (setq a (* k (/ pi 8.0)))
         (setq pts (cons (list (+ cx (* r (cos a))) (+ cy (* r (sin a)))) pts))
         (setq k (1+ k)))
       pts)
     (progn
-      (setq ca (cos rowang)  sa (sin rowang))
-      (mapcar
-        (lambda (p / lx ly)
-          (setq lx (car p)  ly (cadr p))
-          (list (+ cx (- (* lx ca) (* ly sa)))
-                (+ cy (+ (* lx sa) (* ly ca)))))
-        lverts))
+      (setq ca (cos rowang) sa (sin rowang) pts '())
+      (foreach p lverts
+        (setq pts (cons (pf:xform (car p) (cadr p) cx cy ca sa) pts)))
+      pts)
   )
 )
 
 ;;; ---- interactive pattern setup ----------------------------------
 
+(defun pf:sizeprompt (shape)
+  (cond
+    ((= shape "Circle")  "\nHole diameter (in) <")
+    ((= shape "Square")  "\nSquare side length (in) <")
+    ((= shape "Hexagon") "\nHexagon size across flats (in) <")
+    ((= shape "Diamond") "\nDiamond point-to-point size (in) <")
+    (T "\nHole size (in) <")
+  )
+)
+
 (defun pf:setup ( / tmp)
-  ;; SHAPE
   (initget "Circle Square Rectangle Hexagon Diamond")
   (setq tmp (getkword
               (strcat "\nHole shape [Circle/Square/Rectangle/Hexagon/Diamond] <"
@@ -227,10 +237,9 @@
   (if tmp (setq *perf-shape* tmp)
           (if (null *perf-shape*) (setq *perf-shape* "Circle")))
 
-  ;; SIZE (one or two values)
   (cond
     ((= *perf-shape* "Rectangle")
-     (initget 6)  ; no zero, no negative
+     (initget 6)
      (setq tmp (getdist (strcat "\nHole length (in) <"
                                 (rtos (cond (*perf-size*) (1.0)) 2 4) ">: ")))
      (if tmp (setq *perf-size* tmp) (if (null *perf-size*) (setq *perf-size* 1.0)))
@@ -240,18 +249,16 @@
      (if tmp (setq *perf-size2* tmp) (if (null *perf-size2*) (setq *perf-size2* 0.5))))
     (T
      (initget 6)
-     (setq tmp (getdist (strcat "\nHole size (in) <"
+     (setq tmp (getdist (strcat (pf:sizeprompt *perf-shape*)
                                 (rtos (cond (*perf-size*) (0.5)) 2 4) ">: ")))
      (if tmp (setq *perf-size* tmp) (if (null *perf-size*) (setq *perf-size* 0.5))))
   )
 
-  ;; SPACING
   (initget 6)
   (setq tmp (getdist (strcat "\nSpacing center-to-center (in) <"
                              (rtos (cond (*perf-spacing*) (1.0)) 2 4) ">: ")))
   (if tmp (setq *perf-spacing* tmp) (if (null *perf-spacing*) (setq *perf-spacing* 1.0)))
 
-  ;; ANGLE
   (initget "Straight 30 45 60")
   (setq tmp (getkword (strcat "\nPattern angle [Straight/30/45/60] <"
                               (cond (*perf-angle*) ("60")) ">: ")))
@@ -262,31 +269,58 @@
 )
 
 ;;; ---- boundary acquisition ---------------------------------------
-;;; Returns a list of (x y) polygon vertices, or NIL on cancel.
+;;; Returns (clippoly realverts) where:
+;;;   clippoly  = list of (x y) used for inside/clip tests
+;;;   realverts = the boundary's true vertices (for edge following),
+;;;               or NIL when the boundary is curved / unavailable.
+;;; Returns NIL on cancel.
 
-(defun pf:getboundary ( / m ss en ed verts p1 p2 mnx mny mxx mxy)
+;;; Sample any closed curve into a polygon of (x y) points.
+(defun pf:curvepts (en / p0 p1 n i pt pts param)
+  (setq p0 (vlax-curve-getStartParam en)
+        p1 (vlax-curve-getEndParam en)
+        n  256  pts '()  i 0)
+  (while (<= i n)
+    (setq param (+ p0 (* (/ (- p1 p0) (float n)) i))
+          pt (vlax-curve-getPointAtParam en param))
+    (if pt (setq pts (cons (list (car pt) (cadr pt)) pts)))
+    (setq i (1+ i)))
+  (reverse pts)
+)
+
+;;; True vertices of an LWPOLYLINE/POLYLINE, else NIL.
+(defun pf:realverts (en / ed et verts)
+  (setq ed (entget en)
+        et (cdr (assoc 0 ed))
+        verts '())
+  (cond
+    ((= et "LWPOLYLINE")
+     (foreach pr ed
+       (if (= 10 (car pr))
+         (setq verts (cons (list (car (cdr pr)) (cadr (cdr pr))) verts))))
+     (reverse verts))
+    (T nil)
+  )
+)
+
+(defun pf:getboundary ( / m ss en p1 p2 mnx mny mxx mxy clip rv)
   (initget "Select Window")
   (setq m (getkword "\nFill area by [Select boundary/Window corners] <Select>: "))
   (if (null m) (setq m "Select"))
   (cond
     ((= m "Select")
-     (princ "\nSelect a single closed polyline boundary: ")
-     (setq ss (ssget ":S" '((0 . "LWPOLYLINE"))))
+     (princ "\nSelect a single closed boundary: ")
+     (setq ss (ssget ":S"))
      (if (null ss)
        (progn (princ "\nNothing selected.") nil)
        (progn
-         (setq en (ssname ss 0)  ed (entget en))
-         (if (/= 1 (logand 1 (cdr (assoc 70 ed))))
-           (progn (princ "\nThat polyline is not closed.") nil)
-           (progn
-             ;; group 10 of an LWPOLYLINE is a 2D point (x y)
-             (setq verts '())
-             (foreach pr ed
-               (if (= 10 (car pr))
-                 (setq verts (cons (list (car (cdr pr)) (cadr (cdr pr))) verts))))
-             (reverse verts)
-           )
-         )
+         (setq en (ssname ss 0))
+         (if (not (vl-catch-all-error-p
+                    (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
+           (if (= 1 (vlax-curve-isClosed en))
+             (list (pf:curvepts en) (pf:realverts en))
+             (progn (princ "\nThat boundary is not closed.") nil))
+           (progn (princ "\nThat object cannot be used as a boundary.") nil))
        )
      )
     )
@@ -297,26 +331,52 @@
          (setq p2 (getcorner p1 "\nUpper-right corner of fill area: "))
          (if (null p2) nil
            (progn
-             (setq mnx (min (car p1) (car p2))  mxx (max (car p1) (car p2))
-                   mny (min (cadr p1) (cadr p2)) mxy (max (cadr p1) (cadr p2)))
-             (list (list mnx mny) (list mxx mny) (list mxx mxy) (list mnx mxy))
-           )
-         )
-       )
-     )
-    )
+             (setq mnx (min (car p1) (car p2)) mxx (max (car p1) (car p2))
+                   mny (min (cadr p1) (cadr p2)) mxy (max (cadr p1) (cadr p2))
+                   clip (list (list mnx mny) (list mxx mny)
+                              (list mxx mxy) (list mnx mxy)))
+             (list clip clip))))))
   )
+)
+
+;;; Does a vertex list contain any non-axis-aligned edge?
+(defun pf:hasangle (verts / n i a b dx dy ang m tol found)
+  (setq n (length verts) tol 0.0175 found nil i 0)  ; ~1 degree
+  (while (and (< i n) (not found))
+    (setq a (nth i verts) b (nth (rem (1+ i) n) verts)
+          dx (- (car b) (car a)) dy (- (cadr b) (cadr a)))
+    (if (> (+ (* dx dx) (* dy dy)) 1e-9)
+      (progn
+        (setq ang (atan dy dx)
+              m   (rem (+ ang (* 2 pi)) (/ pi 2.0)))  ; fold to [0,90)
+        (if (and (> m tol) (< m (- (/ pi 2.0) tol)))
+          (setq found T))))
+    (setq i (1+ i)))
+  found
+)
+
+;;; Angle (radians) of the boundary edge nearest to picked point PP.
+(defun pf:nearestedge-ang (pp verts / n i a b d best ang)
+  (setq n (length verts) best 1e30 ang 0.0 i 0)
+  (while (< i n)
+    (setq a (nth i verts) b (nth (rem (1+ i) n) verts)
+          d (pf:segdist pp a b))
+    (if (< d best)
+      (setq best d
+            ang (atan (- (cadr b) (cadr a)) (- (car b) (car a)))))
+    (setq i (1+ i)))
+  ang
 )
 
 ;;; ---- main command ------------------------------------------------
 
 (defun c:PERF
-    (/ *error* poly bb width height cx cy
-       lat ux uy vx vy rowang
+    (/ *error* poly realverts bb width height cx cy
+       lat ux uy vx vy rowang grot ca0 sa0
        longIsX rowsAlongX rowsOnLong dec
        lverts cushion det margin hw2 hh2
        imin imax jmin jmax ii jj dx dy
-       i j px py count ans needsetup c)
+       i j px py count ans needsetup c bres pp follow)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
@@ -326,7 +386,7 @@
 
   (pf:loadcfg)
 
-  ;; --- decide whether to reuse or redefine the pattern ------------
+  ;; --- reuse or redefine the pattern ------------------------------
   (setq needsetup T)
   (if (pf:havecfg)
     (progn
@@ -344,35 +404,57 @@
   (if needsetup (pf:setup))
 
   ;; --- get the fill boundary --------------------------------------
-  (setq poly (pf:getboundary))
-  (if (null poly)
+  (setq bres (pf:getboundary))
+  (if (null bres)
     (progn (princ "\nNo fill area - command cancelled.") (exit)))
+  (setq poly (car bres) realverts (cadr bres))
 
-  (setq bb     (pf:bbox poly)
-        width  (- (caddr bb) (car bb))
+  (setq bb (pf:bbox poly)
+        width (- (caddr bb) (car bb))
         height (- (cadddr bb) (cadr bb))
-        cx     (* 0.5 (+ (car bb) (caddr bb)))
-        cy     (* 0.5 (+ (cadr bb) (cadddr bb))))
+        cx (* 0.5 (+ (car bb) (caddr bb)))
+        cy (* 0.5 (+ (cadr bb) (cadddr bb)))
+        grot 0.0  follow nil)
 
-  ;; --- orientation check (staggered 30/60 only) -------------------
-  (if (member *perf-angle* '("30" "60"))
+  ;; --- offer to follow an angled boundary edge --------------------
+  (if (and realverts (pf:hasangle realverts))
     (progn
-      (setq longIsX    (>= width height)
-            rowsAlongX (= *perf-angle* "60")           ; 60 -> rows run along X
+      (initget "Yes No")
+      (setq ans (getkword
+                  "\nBoundary has angled edges. Align pattern rows to a boundary edge? [Yes/No] <No>: "))
+      (if (= ans "Yes")
+        (progn
+          (setq pp (getpoint "\nPick a point on the edge to align the rows to: "))
+          (if pp
+            (progn
+              (setq grot (pf:nearestedge-ang pp realverts)
+                    follow T)
+              (princ (strcat "\nRows aligned to edge at "
+                             (angtos grot 0 2) "."))
+            )
+          )
+        )
+      )
+    )
+  )
+
+  ;; --- orientation check (staggered 30/60, axis-aligned only) -----
+  (if (and (not follow) (member *perf-angle* '("30" "60")))
+    (progn
+      (setq longIsX (>= width height)
+            rowsAlongX (= *perf-angle* "60")
             rowsOnLong (or (and longIsX rowsAlongX)
                            (and (not longIsX) (not rowsAlongX))))
       (if (not rowsOnLong)
         (progn
-          (princ "\n")
-          (princ "\n*** ORIENTATION WARNING ***")
+          (princ "\n\n*** ORIENTATION WARNING ***")
           (princ "\nThe continuous STRAIGHT rows are currently running along the")
           (princ "\nSHORT side of the boundary.  Best practice is to run the straight")
           (princ "\nrows along the LONGEST side, leaving the staggered edge on the")
           (princ "\nshort side (stronger sheet, less waste, cleaner edge).")
           (princ (strcat "\n  Boundary: " (rtos width 2 3) " (X) x "
                          (rtos height 2 3) " (Y)"))
-          (princ (strcat "\n  Angle " *perf-angle*
-                         " runs straight rows along the "
+          (princ (strcat "\n  Angle " *perf-angle* " runs straight rows along the "
                          (if rowsAlongX "X" "Y") " axis (short side)."))
           (princ "\n  [Continue] = override, keep this orientation.")
           (princ "\n  [Fix]      = swap 30<->60 to put straight rows on the long side.")
@@ -382,33 +464,34 @@
             (progn
               (setq *perf-angle* (if (= *perf-angle* "30") "60" "30"))
               (pf:savecfg)
-              (princ (strcat "\nReoriented - angle is now " *perf-angle* "."))
-            )
-            (princ "\nContinuing with the current orientation (override).")
-          )
+              (princ (strcat "\nReoriented - angle is now " *perf-angle* ".")))
+            (princ "\nContinuing with the current orientation (override)."))
         )
       )
     )
   )
 
-  ;; --- build lattice & local hole geometry ------------------------
-  (setq lat    (pf:lattice *perf-angle* *perf-spacing*)
+  ;; --- build lattice & local hole geometry, apply global rotation -
+  (setq lat (pf:lattice *perf-angle* *perf-spacing*)
         ux (nth 0 lat) uy (nth 1 lat)
         vx (nth 2 lat) vy (nth 3 lat)
-        rowang (nth 4 lat)
-        lverts  (pf:localverts *perf-shape* *perf-size* *perf-size2*)
+        rowang (+ (nth 4 lat) grot)
+        lverts (pf:localverts *perf-shape* *perf-size* *perf-size2*)
         cushion (pf:circumr *perf-shape* *perf-size* *perf-size2*))
+  ;; rotate the lattice vectors by grot (0 unless following an edge)
+  (setq ca0 (cos grot) sa0 (sin grot))
+  (setq lat (list (- (* ux ca0) (* uy sa0)) (+ (* ux sa0) (* uy ca0))
+                  (- (* vx ca0) (* vy sa0)) (+ (* vx sa0) (* vy ca0))))
+  (setq ux (nth 0 lat) uy (nth 1 lat) vx (nth 2 lat) vy (nth 3 lat))
 
-  ;; Lattice index range: invert the lattice matrix [U V] against the
-  ;; four (expanded) bbox corners so coverage is guaranteed for any
-  ;; angle, regardless of each vector's X/Y component magnitude.
-  (setq det    (- (* ux vy) (* uy vx))
+  ;; index range: invert [U V] against expanded bbox corners
+  (setq det (- (* ux vy) (* uy vx))
         margin (+ cushion *perf-spacing*)
-        hw2    (+ (* 0.5 width)  margin)
-        hh2    (+ (* 0.5 height) margin))
+        hw2 (+ (* 0.5 width) margin)
+        hh2 (+ (* 0.5 height) margin))
   (setq imin 1e30 imax -1e30 jmin 1e30 jmax -1e30)
   (foreach c (list (list (- hw2) (- hh2)) (list hw2 (- hh2))
-                   (list hw2 hh2)         (list (- hw2) hh2))
+                   (list hw2 hh2) (list (- hw2) hh2))
     (setq dx (car c) dy (cadr c)
           ii (/ (- (* vy dx) (* vx dy)) det)
           jj (/ (- (* ux dy) (* uy dx)) det)
@@ -418,31 +501,26 @@
         jmin (fix (- jmin 1.0)) jmax (fix (+ jmax 1.0)))
 
   ;; --- generate, clip, draw ---------------------------------------
-  (setq count 0  i imin)
+  (setq count 0 i imin)
   (while (<= i imax)
     (setq j jmin)
     (while (<= j jmax)
       (setq px (+ cx (* i ux) (* j vx))
             py (+ cy (* i uy) (* j vy)))
-      ;; quick bbox reject before the full footprint test
       (if (and (>= px (- (car bb) cushion)) (<= px (+ (caddr bb) cushion))
                (>= py (- (cadr bb) cushion)) (<= py (+ (cadddr bb) cushion)))
-        (if (vl-every
-              (function (lambda (tp) (pf:ptinpoly tp poly)))
-              (pf:footprint *perf-shape* *perf-size* px py rowang lverts))
+        (if (pf:allinside
+              (pf:footprint *perf-shape* *perf-size* px py rowang lverts)
+              poly)
           (progn
             (pf:drawhole *perf-shape* *perf-size* *perf-size2* px py rowang lverts)
-            (setq count (1+ count))
-          )
+            (setq count (1+ count)))
         )
       )
-      (setq j (1+ j))
-    )
-    (setq i (1+ i))
-  )
+      (setq j (1+ j)))
+    (setq i (1+ i)))
 
-  (princ (strcat "\nDone - " (itoa count) " "
-                 *perf-shape* " hole(s) placed."))
+  (princ (strcat "\nDone - " (itoa count) " " *perf-shape* " hole(s) placed."))
   (princ)
 )
 
