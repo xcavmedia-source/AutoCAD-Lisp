@@ -275,6 +275,18 @@
 ;;;               or NIL when the boundary is curved / unavailable.
 ;;; Returns NIL on cancel.
 
+;;; T when the curve EN is usable as a closed boundary: either its
+;;; closed flag is set, or its start and end points coincide.
+(defun pf:isclosed (en / sp ep)
+  (cond
+    ((vlax-curve-isClosed en) T)
+    ((and (setq sp (vlax-curve-getStartPoint en))
+          (setq ep (vlax-curve-getEndPoint en))
+          (< (distance sp ep) 1e-6)) T)
+    (T nil)
+  )
+)
+
 ;;; Sample any closed curve into a polygon of (x y) points.
 (defun pf:curvepts (en / p0 p1 n i pt pts param)
   (setq p0 (vlax-curve-getStartParam en)
@@ -317,7 +329,7 @@
          (setq en (ssname ss 0))
          (if (not (vl-catch-all-error-p
                     (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
-           (if (= 1 (vlax-curve-isClosed en))
+           (if (pf:isclosed en)
              (list (pf:curvepts en) (pf:realverts en))
              (progn (princ "\nThat boundary is not closed.") nil))
            (progn (princ "\nThat object cannot be used as a boundary.") nil))
