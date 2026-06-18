@@ -314,8 +314,9 @@
     (/ *error* poly bb width height cx cy
        lat ux uy vx vy rowang
        longIsX rowsAlongX rowsOnLong dec
-       lverts cushion halfdiag nsteps i j px py count
-       drawn ans needsetup)
+       lverts cushion det margin hw2 hh2
+       imin imax jmin jmax ii jj dx dy
+       i j px py count ans needsetup c)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
@@ -398,16 +399,29 @@
         lverts  (pf:localverts *perf-shape* *perf-size* *perf-size2*)
         cushion (pf:circumr *perf-shape* *perf-size* *perf-size2*))
 
-  ;; lattice index range: enough steps to cover the diagonal + cushion
-  (setq halfdiag (+ (* 0.5 (sqrt (+ (* width width) (* height height))))
-                    *perf-spacing* cushion)
-        nsteps   (+ 2 (fix (/ halfdiag *perf-spacing*))))
+  ;; Lattice index range: invert the lattice matrix [U V] against the
+  ;; four (expanded) bbox corners so coverage is guaranteed for any
+  ;; angle, regardless of each vector's X/Y component magnitude.
+  (setq det    (- (* ux vy) (* uy vx))
+        margin (+ cushion *perf-spacing*)
+        hw2    (+ (* 0.5 width)  margin)
+        hh2    (+ (* 0.5 height) margin))
+  (setq imin 1e30 imax -1e30 jmin 1e30 jmax -1e30)
+  (foreach c (list (list (- hw2) (- hh2)) (list hw2 (- hh2))
+                   (list hw2 hh2)         (list (- hw2) hh2))
+    (setq dx (car c) dy (cadr c)
+          ii (/ (- (* vy dx) (* vx dy)) det)
+          jj (/ (- (* ux dy) (* uy dx)) det)
+          imin (min imin ii) imax (max imax ii)
+          jmin (min jmin jj) jmax (max jmax jj)))
+  (setq imin (fix (- imin 1.0)) imax (fix (+ imax 1.0))
+        jmin (fix (- jmin 1.0)) jmax (fix (+ jmax 1.0)))
 
   ;; --- generate, clip, draw ---------------------------------------
-  (setq count 0  i (- nsteps))
-  (while (<= i nsteps)
-    (setq j (- nsteps))
-    (while (<= j nsteps)
+  (setq count 0  i imin)
+  (while (<= i imax)
+    (setq j jmin)
+    (while (<= j jmax)
       (setq px (+ cx (* i ux) (* j vx))
             py (+ cy (* i uy) (* j vy)))
       ;; quick bbox reject before the full footprint test
