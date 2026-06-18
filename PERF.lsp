@@ -327,11 +327,15 @@
        (progn (princ "\nNothing selected.") nil)
        (progn
          (setq en (ssname ss 0))
+         ;; Accept any object that behaves as a curve. We sample its
+         ;; outline and let the point-in-polygon test close the ring,
+         ;; so the closed flag does not need to be set.
          (if (not (vl-catch-all-error-p
                     (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
-           (if (pf:isclosed en)
-             (list (pf:curvepts en) (pf:realverts en))
-             (progn (princ "\nThat boundary is not closed.") nil))
+           (progn
+             (if (not (pf:isclosed en))
+               (princ "\nNote: boundary not flagged closed - treating its outline as a closed loop."))
+             (list (pf:curvepts en) (pf:realverts en)))
            (progn (princ "\nThat object cannot be used as a boundary.") nil))
        )
      )
