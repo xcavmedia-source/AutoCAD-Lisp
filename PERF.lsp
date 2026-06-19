@@ -56,6 +56,7 @@
       (if (setq g (getcfg (strcat *perf-cfgroot* "Size2")))   (setq *perf-size2*   (atof g)))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Spacing"))) (setq *perf-spacing* (atof g)))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Angle")))   (setq *perf-angle*   g))
+      (if (setq g (getcfg (strcat *perf-cfgroot* "Method")))  (setq *perf-method*  g))
     )
   )
   (princ)
@@ -67,6 +68,7 @@
   (setcfg (strcat *perf-cfgroot* "Size2")   (rtos (cond (*perf-size2*) (0.0)) 2 8))
   (setcfg (strcat *perf-cfgroot* "Spacing") (rtos *perf-spacing* 2 8))
   (setcfg (strcat *perf-cfgroot* "Angle")   *perf-angle*)
+  (setcfg (strcat *perf-cfgroot* "Method")  (cond (*perf-method*) ("Select")))
   (princ)
 )
 
@@ -287,55 +289,76 @@
   )
 )
 
-;;; Sample any closed curve into a polygon of (x y) points.
-(defun pf:curvepts (en / p0 p1 n i pt pts param)
+;;; Transform a 3D point P by a nentsel block matrix MAT (a list of
+;;; four 3D points: three basis columns + translation).  MAT NIL = WCS.
+(defun pf:xfmpt (p mat)
+  (if mat
+    (list
+      (+ (* (car   (nth 0 mat)) (car p)) (* (car   (nth 1 mat)) (cadr p))
+         (* (car   (nth 2 mat)) (caddr p)) (car   (nth 3 mat)))
+      (+ (* (cadr  (nth 0 mat)) (car p)) (* (cadr  (nth 1 mat)) (cadr p))
+         (* (cadr  (nth 2 mat)) (caddr p)) (cadr  (nth 3 mat)))
+      (+ (* (caddr (nth 0 mat)) (car p)) (* (caddr (nth 1 mat)) (cadr p))
+         (* (caddr (nth 2 mat)) (caddr p)) (caddr (nth 3 mat))))
+    p)
+)
+
+;;; Sample any closed curve into a polygon of (x y) WCS points.
+;;; MAT is the nentsel block transform (NIL when not nested).
+(defun pf:curvepts (en mat / p0 p1 n i pt pts param)
   (setq p0 (vlax-curve-getStartParam en)
         p1 (vlax-curve-getEndParam en)
         n  256  pts '()  i 0)
   (while (<= i n)
     (setq param (+ p0 (* (/ (- p1 p0) (float n)) i))
           pt (vlax-curve-getPointAtParam en param))
-    (if pt (setq pts (cons (list (car pt) (cadr pt)) pts)))
+    (if pt
+      (progn (setq pt (pf:xfmpt pt mat))
+             (setq pts (cons (list (car pt) (cadr pt)) pts))))
     (setq i (1+ i)))
   (reverse pts)
 )
 
-;;; True vertices of an LWPOLYLINE/POLYLINE, else NIL.
-(defun pf:realverts (en / ed et verts)
-  (setq ed (entget en)
-        et (cdr (assoc 0 ed))
-        verts '())
-  (cond
-    ((= et "LWPOLYLINE")
-     (foreach pr ed
-       (if (= 10 (car pr))
-         (setq verts (cons (list (car (cdr pr)) (cadr (cdr pr))) verts))))
-     (reverse verts))
-    (T nil)
+;;; True WCS vertices of an LWPOLYLINE, else NIL.  MAT as above.
+(defun pf:realverts (en mat / et nv i pt verts)
+  (setq et (cdr (assoc 0 (entget en))))
+  (if (= et "LWPOLYLINE")
+    (progn
+      (setq nv (cdr (assoc 90 (entget en))) verts '() i 0)
+      (while (< i nv)
+        (setq pt (pf:xfmpt (vlax-curve-getPointAtParam en i) mat))
+        (setq verts (cons (list (car pt) (cadr pt)) verts))
+        (setq i (1+ i)))
+      (reverse verts))
+    nil
   )
 )
 
-(defun pf:getboundary ( / m ss en p1 p2 mnx mny mxx mxy clip rv)
+(defun pf:getboundary ( / m nsel en mat p1 p2 mnx mny mxx mxy clip)
   (initget "Select Window")
-  (setq m (getkword "\nFill area by [Select boundary/Window corners] <Select>: "))
-  (if (null m) (setq m "Select"))
+  (setq m (getkword (strcat "\nFill area by [Select boundary/Window corners] <"
+                            (cond (*perf-method*) ("Select")) ">: ")))
+  (if (null m) (setq m (cond (*perf-method*) ("Select"))))
+  (setq *perf-method* m)
+  (setcfg (strcat *perf-cfgroot* "Method") m)
   (cond
     ((= m "Select")
-     (princ "\nSelect a single closed boundary: ")
-     (setq ss (ssget ":S"))
-     (if (null ss)
+     ;; nentsel descends into blocks; returns a block transform matrix
+     ;; (3rd element) when the picked object is nested.
+     (setq nsel (nentsel "\nSelect a closed boundary (may be nested in a block): "))
+     (if (null nsel)
        (progn (princ "\nNothing selected.") nil)
        (progn
-         (setq en (ssname ss 0))
-         ;; Accept any object that behaves as a curve. We sample its
-         ;; outline and let the point-in-polygon test close the ring,
-         ;; so the closed flag does not need to be set.
+         (setq en  (car nsel)
+               mat (if (>= (length nsel) 4) (caddr nsel) nil))
+         ;; Accept any curve-like object; sample its outline and let
+         ;; the point-in-polygon test close the ring.
          (if (not (vl-catch-all-error-p
                     (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
            (progn
              (if (not (pf:isclosed en))
                (princ "\nNote: boundary not flagged closed - treating its outline as a closed loop."))
-             (list (pf:curvepts en) (pf:realverts en)))
+             (list (pf:curvepts en mat) (pf:realverts en mat)))
            (progn (princ "\nThat object cannot be used as a boundary.") nil))
        )
      )
