@@ -6,10 +6,13 @@
 ;;; any perforations that collide with the 3/4" mounting holes.
 ;;;
 ;;; Workflow (command  MHPLACE):
-;;;   1. Select the panel - the H_Panel Hidden back-edge lines are
-;;;      filtered out of whatever you select.  These four lines are
-;;;      the true back-panel edges and define the run lengths.
-;;;   2. Select the perforations - H_Perf circles are filtered out.
+;;;   1. Select the panel BLOCK - the H_Panel Hidden back-edge lines
+;;;      live inside it, so they can't be picked directly.  The tool
+;;;      reads them out of the block definition (handling rotation,
+;;;      scale and nested blocks) to get the four back-panel edges,
+;;;      and leaves the block itself untouched.
+;;;   2. Select the perforations - loose H_Perf circles are filtered
+;;;      out of the selection.
 ;;;   3. Pick the mounting-hole block - one existing insert tells the
 ;;;      tool which block (and layer) to place.  Its geometry (the
 ;;;      3/4" hole radius and the slot length) is read straight from
@@ -72,41 +75,107 @@
 )
 
 
-;;; ---- back-panel edge extraction --------------------------------
+;;; ---- panel-block edge extraction -------------------------------
 
-;;; From a selection set of LINEs, keep only the perfectly axis-
-;;; aligned ones (angled corner chamfers are dropped) and return
+;;; The back-panel edges live on layer H_Panel Hidden INSIDE the panel
+;;; block, so they can't be selected directly.  Given a panel INSERT we
+;;; walk its block definition (recursing through any nested blocks),
+;;; transform every H_Panel Hidden line into world coordinates, and
+;;; collect them into the global *mh:segs* as (worldPt1 worldPt2) pairs.
+
+;;; Build a transform parameter list from an INSERT entity list:
+;;;   (basex basey sx sy cos(rot) sin(rot) insx insy)
+(defun mh:xform (ed / ins base bobj)
+  (setq ins  (cdr (assoc 10 ed))
+        bobj (tblobjname "BLOCK" (cdr (assoc 2 ed)))
+        base (if bobj (cdr (assoc 10 (entget bobj))) '(0.0 0.0 0.0)))
+  (list (car base) (cadr base)
+        (cond ((cdr (assoc 41 ed))) (1.0))
+        (cond ((cdr (assoc 42 ed))) (1.0))
+        (cos (cond ((cdr (assoc 50 ed))) (0.0)))
+        (sin (cond ((cdr (assoc 50 ed))) (0.0)))
+        (car ins) (cadr ins))
+)
+
+;;; Apply ONE transform param set to a 2D point.
+(defun mh:xf1 (p pr / lx ly)
+  (setq lx (* (- (car  p) (car   pr)) (caddr  pr))
+        ly (* (- (cadr p) (cadr  pr)) (cadddr pr)))
+  (list (+ (nth 6 pr) (* lx (nth 4 pr)) (* (- ly) (nth 5 pr)))
+        (+ (nth 7 pr) (* lx (nth 5 pr)) (*    ly  (nth 4 pr)))
+        0.0)
+)
+
+;;; Apply a stack of transforms (innermost first) to a point.
+(defun mh:xfpt (p plist / q)
+  (setq q p)
+  (foreach pr plist (setq q (mh:xf1 q pr)))
+  q
+)
+
+;;; Recursively walk block BLKNAME, accumulating H_Panel Hidden lines
+;;; (transformed by PLIST) into the global *mh:segs*.
+(defun mh:walkblock (blkname plist hlayer / e ed t0)
+  (setq e (tblobjname "BLOCK" blkname))
+  (if e (setq e (entnext e)))
+  (while (and e (setq ed (entget e))
+              (/= (cdr (assoc 0 ed)) "ENDBLK"))
+    (setq t0 (cdr (assoc 0 ed)))
+    (cond
+      ((and (= t0 "LINE")
+            (= (strcase (cdr (assoc 8 ed))) (strcase hlayer)))
+       (setq *mh:segs*
+             (cons (list (mh:xfpt (cdr (assoc 10 ed)) plist)
+                         (mh:xfpt (cdr (assoc 11 ed)) plist))
+                   *mh:segs*)))
+      ((= t0 "INSERT")
+       (mh:walkblock (cdr (assoc 2 ed))
+                     (cons (mh:xform ed) plist)
+                     hlayer))
+    )
+    (setq e (entnext e))
+  )
+)
+
+;;; Collect world-space H_Panel Hidden segments under a panel INSERT.
+(defun mh:hiddensegs (insent hlayer)
+  (setq *mh:segs* '())
+  (mh:walkblock (cdr (assoc 2 (entget insent)))
+                (list (mh:xform (entget insent)))
+                hlayer)
+  *mh:segs*
+)
+
+;;; From a list of (pt1 pt2) line segments, keep only the perfectly
+;;; axis-aligned ones (angled corner chamfers are dropped) and return
 ;;;   (leftX rightX botY topY)
 ;;; using only the long edges so short lines never skew the result.
-(defun mh:paneledges (ss / i ed t0 a b dx dy len
+(defun mh:paneledges (segs / s a b dx dy mx mn len
                          vlist hlist maxv maxh
                          leftx rightx boty topy)
-  (setq i 0 vlist '() hlist '() maxv 0.0 maxh 0.0)
-  (while (< i (sslength ss))
-    (setq ed (entget (ssname ss i))
-          t0 (cdr (assoc 0 ed)))
-    (if (= t0 "LINE")
-      (progn
-        (setq a  (cdr (assoc 10 ed))
-              b  (cdr (assoc 11 ed))
-              dx (abs (- (car b) (car a)))
-              dy (abs (- (cadr b) (cadr a))))
-        (cond
-          ;; vertical edge : constant X
-          ((< dx *mh:tol*)
-           (setq len dy
-                 vlist (cons (list (car a) len) vlist))
-           (if (> len maxv) (setq maxv len)))
-          ;; horizontal edge : constant Y
-          ((< dy *mh:tol*)
-           (setq len dx
-                 hlist (cons (list (cadr a) len) hlist))
-           (if (> len maxh) (setq maxh len)))
-          ;; angled (chamfer) - ignore
-        )
+  (setq vlist '() hlist '() maxv 0.0 maxh 0.0)
+  (foreach s segs
+    (setq a  (car  s)
+          b  (cadr s)
+          dx (abs (- (car b) (car a)))
+          dy (abs (- (cadr b) (cadr a)))
+          mx (max dx dy)
+          mn (min dx dy))
+    ;; Near-axis = an edge; ~45 deg (ratio near 1) = a corner chamfer.
+    ;; Real CAD edges are rarely perfectly axis-aligned, so classify by
+    ;; ratio rather than an exact tolerance, and use the segment midpoint.
+    (if (and (> mx *mh:tol*) (< (/ mn mx) 0.2))
+      (if (< dx dy)
+        ;; vertical edge : near-constant X
+        (setq len dy
+              vlist (cons (list (* 0.5 (+ (car a) (car b))) len) vlist)
+              maxv  (max maxv len))
+        ;; horizontal edge : near-constant Y
+        (setq len dx
+              hlist (cons (list (* 0.5 (+ (cadr a) (cadr b))) len) hlist)
+              maxh  (max maxh len))
       )
     )
-    (setq i (1+ i))
   )
   ;; keep only the long edges (>= half the longest of each kind)
   (foreach v vlist
@@ -315,7 +384,7 @@
 
 (defun c:MHPLACE
     (/ *error* acadobj doc space
-       ssp ssperf ssblk pent blkname blklayer
+       ssp pansegs ssperf ssblk pent blkname blklayer
        edges leftx rightx boty topy width height
        perfs geom holeR slotHalf
        mingap maxdist delclr
@@ -334,13 +403,22 @@
         doc     (vla-get-activedocument acadobj)
         space   (mh:activespace doc))
 
-  ;; --- 1. panel back edges --------------------------------------
-  (princ "\nSelect the panel (its H_Panel Hidden back edges): ")
-  (setq ssp (ssget (list (cons 0 "LINE") (cons 8 *mh:edgelayer*))))
+  ;; --- 1. panel block -> back edges -----------------------------
+  ;; The H_Panel Hidden back-edge lines live inside the panel block,
+  ;; so the user picks the block itself; we read the edges out of its
+  ;; definition (handling rotation / scale / nesting) and leave the
+  ;; block untouched.
+  (princ "\nSelect the panel block: ")
+  (setq ssp (ssget "_+.:E:S" '((0 . "INSERT"))))
   (if (null ssp)
-    (progn (princ "\nNo H_Panel Hidden edge lines selected - cancelled.")
+    (progn (princ "\nNo panel block selected - cancelled.")
            (exit)))
-  (setq edges (mh:paneledges ssp))
+  (setq pansegs (mh:hiddensegs (ssname ssp 0) *mh:edgelayer*))
+  (if (null pansegs)
+    (progn (princ (strcat "\nNo " *mh:edgelayer*
+                          " lines found inside that block - cancelled."))
+           (exit)))
+  (setq edges (mh:paneledges pansegs))
   (if (null edges)
     (progn (princ "\nCould not determine four panel edges - cancelled.")
            (exit)))
