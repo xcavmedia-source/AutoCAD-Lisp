@@ -339,6 +339,31 @@
   (cons (length holes) (length todel))
 )
 
+;;; Delete LOOSE perforations in model/paper space that collide with
+;;; any of the world mounting-hole centres in HOLES (each (x y)).
+;;; This complements the in-block deletion so perforations are removed
+;;; whether they live inside the panel block or loose in the drawing.
+;;; Returns the number deleted.
+(defun mh:loosedel (holes holeR delclr / ss i ent ed c r n)
+  (setq n 0
+        ss (ssget "_X" (list '(0 . "CIRCLE") (cons 8 *mh:perflayer*))))
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq ent (ssname ss i)
+              ed  (entget ent)
+              c   (cdr (assoc 10 ed))
+              r   (cdr (assoc 40 ed)))
+        (if (vl-some
+              '(lambda (q)
+                 (< (- (mh:dist2d (list (car c) (cadr c)) q) holeR r) delclr))
+              holes)
+          (progn (entdel ent) (setq n (1+ n))))
+        (setq i (1+ i)))))
+  n
+)
+
 
 ;;; ---- main command ----------------------------------------------
 
@@ -348,7 +373,7 @@
        mingap maxdist delclr
        i ed name pr panels seen rec
        vert gmin gmax allperf rows
-       ngap spc stations
+       ngap spc stations allholes
        totadd totdel
        leftx rightx boty topy axis pmin pmax holes res)
 
@@ -443,7 +468,7 @@
     (setq stations (mapcar '(lambda (v) (mh:nearest v rows)) stations)))
 
   ;; --- place into each block definition -------------------------
-  (setq totadd 0 totdel 0)
+  (setq totadd 0 totdel 0 allholes '())
   (foreach rec panels
     (setq name   (nth 0 rec)
           pr     (nth 1 rec)
@@ -470,8 +495,14 @@
     )
     (setq res (mh:editblock doc name pr (nth 2 rec) holes holeR delclr)
           totadd (+ totadd (car res))
-          totdel (+ totdel (cdr res)))
+          totdel (+ totdel (cdr res))
+          allholes (append (mapcar '(lambda (h) (list (car h) (cadr h))) holes)
+                           allholes))
   )
+
+  ;; --- also delete loose perforations colliding with the holes ----
+  (if allholes
+    (setq totdel (+ totdel (mh:loosedel allholes holeR delclr))))
 
   (command "_.REGEN")
   (princ (strcat "\nDone - " (itoa (length panels)) " block definition(s); added "
