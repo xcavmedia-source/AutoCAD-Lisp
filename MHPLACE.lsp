@@ -170,24 +170,39 @@
   *mh:segs*
 )
 
-;;; World-space H_Perf circles directly inside the panel block NAME
-;;; (one level deep), transformed by PR.  Returns list of (x y r).
-(defun mh:perfsworld (name pr / lst e ed c)
-  (setq lst '() e (tblobjname "BLOCK" name))
+;;; Recursively collect H_Perf circles under a panel block into the
+;;; global *mh:perfs*, descending through nested blocks so perforations
+;;; nested inside sub-blocks are still found.  Each entry is
+;;;   (ename worldX worldY radius)
+;;; ename is the actual entity (in whatever block holds it) so it can
+;;; be deleted later.
+(defun mh:collectperfs (blkname plist / e ed t0 c)
+  (setq e (tblobjname "BLOCK" blkname))
   (if e (setq e (entnext e)))
   (while (and e (setq ed (entget e))
               (/= (cdr (assoc 0 ed)) "ENDBLK"))
-    (if (and (= (cdr (assoc 0 ed)) "CIRCLE")
-             (= (strcase (cdr (assoc 8 ed))) (strcase *mh:perflayer*)))
-      (progn
-        (setq c (cdr (assoc 10 ed)))
-        (setq lst (cons (append (mh:l2w (list (car c) (cadr c)) pr)
-                                (list (cdr (assoc 40 ed))))
-                        lst)))
+    (setq t0 (cdr (assoc 0 ed)))
+    (cond
+      ((and (= t0 "CIRCLE")
+            (= (strcase (cdr (assoc 8 ed))) (strcase *mh:perflayer*)))
+       (setq c (cdr (assoc 10 ed)))
+       (setq *mh:perfs*
+             (cons (cons e (append (mh:xfstack (list (car c) (cadr c)) plist)
+                                   (list (cdr (assoc 40 ed)))))
+                   *mh:perfs*)))
+      ((= t0 "INSERT")
+       (mh:collectperfs (cdr (assoc 2 ed)) (cons (mh:xform ed) plist)))
     )
     (setq e (entnext e))
   )
-  lst
+)
+
+;;; All H_Perf circles under a panel INSERT (world coords + ename).
+(defun mh:panelperfs (insent)
+  (setq *mh:perfs* '())
+  (mh:collectperfs (cdr (assoc 2 (entget insent)))
+                   (list (mh:xform (entget insent))))
+  *mh:perfs*
 )
 
 ;;; From a list of (pt1 pt2) line segments, keep only the perfectly
@@ -259,41 +274,40 @@
 ;;; ---- placement along one edge ----------------------------------
 
 ;;; Build the world-space mounting-hole centres for a single edge.
+;;; The hole is aligned with the perforation ROW nearest the edge so it
+;;; blends into the pattern, clamped so the gap from the slot edge to
+;;; the panel edge stays within [mingap, maxdist].
 ;;;   axis     - 1 vertical run (perp = X) / 0 horizontal run (perp = Y)
 ;;;   edgeval  - edge coordinate on the perpendicular axis (world)
-;;;   nrm      - inward normal sign (+1 / -1) on the perpendicular axis
+;;;   nrm      - interior normal sign (+1 / -1) on the perpendicular axis
 ;;;   perfs    - this panel's world perforations (x y r)
 ;;;   stations - shared run-axis hole coordinates (world)
 ;;;   pmin pmax- this panel's run extent
 ;;;   worldrot - world rotation for the inserted block
 ;;; Returns a list of (wx wy worldRot).
 (defun mh:edgeholes (axis edgeval nrm perfs stations pmin pmax
-                     holeR slotHalf mingap maxdist delclr worldrot
-                     / nr used g bestg bestpen pen step perp s c p clr holes)
-  ;; perforations close enough to the edge to ever interact
-  (setq nr (vl-remove-if-not
-             '(lambda (p)
-                (< (abs (- (if (= axis 1) (car p) (cadr p)) edgeval))
-                   (+ slotHalf maxdist holeR 1.0)))
-             perfs))
-  ;; only the shared stations that fall inside this panel's run
-  (setq used (vl-remove-if-not
+                     slotHalf mingap maxdist worldrot
+                     / dmin dmax cand pc d dfinal used perp s holes)
+  ;; Perforation-row distances (inboard from the edge).  d>0 means the
+  ;; row is inside the panel; the edge-most row is the smallest d.
+  (setq dmin (+ slotHalf mingap)     ; hole-centre distance for min gap
+        dmax (+ slotHalf maxdist)    ; hole-centre distance for max dist
+        cand '())
+  (foreach p perfs
+    (setq pc (if (= axis 1) (car p) (cadr p))
+          d  (* nrm (- pc edgeval)))
+    (if (and (> d *mh:tol*) (<= d (+ dmax 1.0)))
+      (setq cand (cons d cand))))
+  ;; Align to the edge-most row, but never closer than the min gap nor
+  ;; farther than the max distance.
+  (if cand
+    (setq dfinal (max dmin (min dmax (apply 'min cand))))
+    (setq dfinal dmin))
+  (setq perp (+ edgeval (* nrm dfinal))
+        used (vl-remove-if-not
                '(lambda (v) (and (>= v (- pmin 0.001)) (<= v (+ pmax 0.001))))
-               stations))
-  ;; choose the perpendicular set-back the pattern keeps cleanest
-  (setq bestg mingap bestpen nil step 0.02 g mingap)
-  (while (<= g (+ maxdist *mh:tol*))
-    (setq perp (- edgeval (* nrm (+ slotHalf g))) pen 0)
-    (foreach s used
-      (setq c (if (= axis 1) (list perp s) (list s perp)))
-      (foreach p nr
-        (setq clr (- (mh:dist2d c p) holeR (caddr p)))
-        (if (and (>= clr delclr) (< clr (+ delclr 0.15)))
-          (setq pen (1+ pen)))))
-    (if (or (null bestpen) (< pen bestpen)) (setq bestpen pen bestg g))
-    (setq g (+ g step)))
-  ;; emit the holes
-  (setq perp (- edgeval (* nrm (+ slotHalf bestg))) holes '())
+               stations)
+        holes '())
   (foreach s used
     (setq holes (cons (if (= axis 1) (list perp s worldrot)
                                      (list s perp worldrot))
@@ -306,10 +320,11 @@
 
 ;;; Add the mounting-hole blocks to definition NAME (converting each
 ;;; world hole into block-local coordinates via PR) on the mounting-
-;;; hole layer, then delete perforations colliding with those holes.
-;;; HOLES = world (wx wy worldRot).  Returns (added . deleted).
-(defun mh:editblock (doc name pr panelrot holes holeR delclr
-                     / blocks blkdef obj lp lr hxy c w todel)
+;;; hole layer, then delete the panel's perforations that collide with
+;;; those holes.  PERFS = (ename worldX worldY radius) from the panel's
+;;; block tree.  HOLES = world (wx wy worldRot).  Returns (added . deleted).
+(defun mh:editblock (doc name pr panelrot holes perfs holeR delclr
+                     / blocks blkdef obj lp lr hxy n)
   (setq blocks (vla-get-blocks doc)
         blkdef (vla-item blocks name)
         hxy    (mapcar '(lambda (h) (list (car h) (cadr h))) holes))
@@ -321,22 +336,18 @@
                 blkdef (vlax-3d-point (list (car lp) (cadr lp) 0.0))
                 *mh:blockname* 1.0 1.0 1.0 lr))
     (vla-put-layer obj *mh:mhlayer*))
-  ;; collect colliding perforations, then delete them
-  (setq todel '())
-  (vlax-for obj blkdef
-    (if (and (= (vla-get-objectname obj) "AcDbCircle")
-             (= (strcase (vla-get-layer obj)) (strcase *mh:perflayer*)))
-      (progn
-        (setq c (vlax-safearray->list (vlax-variant-value (vla-get-center obj)))
-              w (mh:l2w (list (car c) (cadr c)) pr))
-        (if (vl-some
-              '(lambda (q)
-                 (< (- (mh:dist2d w q) holeR (vla-get-radius obj)) delclr))
-              hxy)
-          (setq todel (cons obj todel)))))
-  )
-  (foreach o todel (vla-delete o))
-  (cons (length holes) (length todel))
+  ;; delete colliding perforations (anywhere in the panel's block tree)
+  (setq n 0)
+  (foreach p perfs
+    (if (vl-some
+          '(lambda (q)
+             (< (- (mh:dist2d (list (cadr p) (caddr p)) q) holeR (cadddr p))
+                delclr))
+          hxy)
+      (if (not (vlax-erased-p (car p)))
+        (progn (vla-delete (vlax-ename->vla-object (car p)))
+               (setq n (1+ n))))))
+  (cons (length holes) n)
 )
 
 ;;; Delete LOOSE perforations in model/paper space that collide with
@@ -375,7 +386,7 @@
        vert gmin gmax allperf rows
        ngap spc stations allholes
        totadd totdel
-       leftx rightx boty topy axis pmin pmax holes res)
+       leftx rightx boty topy axis pmin pmax pxyr holes res)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -433,7 +444,7 @@
           (setq panels
                 (cons (list name pr (nth 8 pr)
                             (car rec) (cadr rec) (caddr rec) (cadddr rec)
-                            (mh:perfsworld name pr))
+                            (mh:panelperfs (ssname sspan i)))
                       panels))
           (princ (strcat "\n  (skipped \"" name "\" - no panel edges found)")))
       )
@@ -463,7 +474,8 @@
   (while (< i ngap)
     (setq stations (cons (+ gmin (* spc (+ i 0.5))) stations) i (1+ i)))
   ;; snap every station onto the nearest world perforation row
-  (setq rows (mh:uniq (mapcar (if vert 'cadr 'car) allperf)))
+  ;; (perf entries are (ename x y r), so x = cadr, y = caddr)
+  (setq rows (mh:uniq (mapcar (if vert 'caddr 'cadr) allperf)))
   (if rows
     (setq stations (mapcar '(lambda (v) (mh:nearest v rows)) stations)))
 
@@ -474,26 +486,27 @@
           pr     (nth 1 rec)
           leftx  (nth 3 rec) rightx (nth 4 rec)
           boty   (nth 5 rec) topy   (nth 6 rec)
+          pxyr   (mapcar 'cdr (nth 7 rec))   ; (x y r) for geometry
           holes  '())
     (if vert
       (progn
         (setq axis 1 pmin boty pmax topy)
         (setq holes
               (append
-                (mh:edgeholes 1 leftx  1.0 (nth 7 rec) stations pmin pmax
-                              holeR slotHalf mingap maxdist delclr 0.0)
-                (mh:edgeholes 1 rightx -1.0 (nth 7 rec) stations pmin pmax
-                              holeR slotHalf mingap maxdist delclr 0.0))))
+                (mh:edgeholes 1 leftx  1.0 pxyr stations pmin pmax
+                              slotHalf mingap maxdist 0.0)
+                (mh:edgeholes 1 rightx -1.0 pxyr stations pmin pmax
+                              slotHalf mingap maxdist 0.0))))
       (progn
         (setq axis 0 pmin leftx pmax rightx)
         (setq holes
               (append
-                (mh:edgeholes 0 boty 1.0  (nth 7 rec) stations pmin pmax
-                              holeR slotHalf mingap maxdist delclr (/ pi 2.0))
-                (mh:edgeholes 0 topy -1.0 (nth 7 rec) stations pmin pmax
-                              holeR slotHalf mingap maxdist delclr (/ pi 2.0)))))
+                (mh:edgeholes 0 boty 1.0  pxyr stations pmin pmax
+                              slotHalf mingap maxdist (/ pi 2.0))
+                (mh:edgeholes 0 topy -1.0 pxyr stations pmin pmax
+                              slotHalf mingap maxdist (/ pi 2.0)))))
     )
-    (setq res (mh:editblock doc name pr (nth 2 rec) holes holeR delclr)
+    (setq res (mh:editblock doc name pr (nth 2 rec) holes (nth 7 rec) holeR delclr)
           totadd (+ totadd (car res))
           totdel (+ totdel (cdr res))
           allholes (append (mapcar '(lambda (h) (list (car h) (cadr h))) holes)
