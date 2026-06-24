@@ -407,6 +407,49 @@
   ang
 )
 
+;;; T when VERTS is an axis-aligned rectangle (every edge horizontal or
+;;; vertical).  Lets the fill optimizer skip the polygon test.
+(defun pf:isaxisrect (verts / n i a b dx dy ok)
+  (setq verts (pf:dedup verts) n (length verts) ok (= n 4) i 0)
+  (while (and ok (< i n))
+    (setq a (nth i verts) b (nth (rem (1+ i) n) verts)
+          dx (abs (- (car b) (car a))) dy (abs (- (cadr b) (cadr a))))
+    (if (and (> dx 1e-6) (> dy 1e-6)) (setq ok nil))
+    (setq i (1+ i)))
+  ok
+)
+
+;;; Drop a trailing vertex that duplicates the first (closing point).
+(defun pf:dedup (verts)
+  (if (and (cdr verts)
+           (< (distance (car verts) (last verts)) 1e-9))
+    (reverse (cdr (reverse verts)))
+    verts)
+)
+
+;;; Evaluate one lattice phase (origin OX OY): returns
+;;; (count minCx minCy maxCx maxCy) over centers that fall within the
+;;; inset window [IXLO IXHI]x[IYLO IYHI] and (unless ISRECT) inside POLY.
+(defun pf:evalphase (ox oy imin imax jmin jmax ux uy vx vy
+                     ixlo ixhi iylo iyhi isRect poly
+                     / i j px py cnt mnx mny mxx mxy)
+  (setq cnt 0 mnx 1e30 mny 1e30 mxx -1e30 mxy -1e30 i imin)
+  (while (<= i imax)
+    (setq j jmin)
+    (while (<= j jmax)
+      (setq px (+ ox (* i ux) (* j vx))
+            py (+ oy (* i uy) (* j vy)))
+      (if (and (>= px ixlo) (<= px ixhi) (>= py iylo) (<= py iyhi)
+               (or isRect (pf:ptinpoly (list px py) poly)))
+        (progn
+          (setq cnt (1+ cnt))
+          (if (< px mnx) (setq mnx px)) (if (> px mxx) (setq mxx px))
+          (if (< py mny) (setq mny py)) (if (> py mxy) (setq mxy py))))
+      (setq j (1+ j)))
+    (setq i (1+ i)))
+  (list cnt mnx mny mxx mxy)
+)
+
 ;;; ---- main command ------------------------------------------------
 
 (defun c:PERF
@@ -415,6 +458,8 @@
        longIsX rowsAlongX rowsOnLong dec
        lverts cushion det margin hw2 hh2
        imin imax jmin jmax ii jj dx dy
+       hx hy gap ixlo ixhi iylo iyhi isRect
+       kbest ksteps res bestox bestoy bres2 sx sy
        i j px py count ans needsetup c bres pp follow)
 
   (defun *error* (msg)
@@ -536,16 +581,59 @@
           jj (/ (- (* ux dy) (* uy dx)) det)
           imin (min imin ii) imax (max imax ii)
           jmin (min jmin jj) jmax (max jmax jj)))
-  (setq imin (fix (- imin 1.0)) imax (fix (+ imax 1.0))
-        jmin (fix (- jmin 1.0)) jmax (fix (+ jmax 1.0)))
+  (setq imin (fix (- imin 3.0)) imax (fix (+ imax 3.0))
+        jmin (fix (- jmin 3.0)) jmax (fix (+ jmax 3.0)))
 
-  ;; --- generate, clip, draw ---------------------------------------
+  ;; --- footprint half-extents + inset window ----------------------
+  ;; A hole fits when its center is at least (half-extent + gap) from
+  ;; the bbox edges; GAP is a hair of clearance so holes never touch.
+  (if (= *perf-shape* "Circle")
+    (setq hx (* 0.5 *perf-size*) hy hx)
+    (progn
+      (setq hx 0.0 hy 0.0 ca0 (cos rowang) sa0 (sin rowang))
+      (foreach p lverts
+        (setq dx (abs (- (* (car p) ca0) (* (cadr p) sa0)))
+              dy (abs (+ (* (car p) sa0) (* (cadr p) ca0))))
+        (if (> dx hx) (setq hx dx)) (if (> dy hy) (setq hy dy)))))
+  (setq gap  (max (* 0.001 *perf-spacing*) 1e-5)
+        ixlo (+ (car bb)   hx gap) ixhi (- (caddr bb)  hx gap)
+        iylo (+ (cadr bb)  hy gap) iyhi (- (cadddr bb) hy gap)
+        isRect (and realverts (= grot 0.0) (pf:isaxisrect realverts)))
+
+  ;; --- optimize lattice phase to maximize the hole count ----------
+  ;; Search translations across one unit cell (spanned by U and V);
+  ;; the densest fit wins.  Rectangles skip the polygon test (fast),
+  ;; so they can afford a finer search.
+  (setq kbest -1 ksteps (if isRect 16 6))
+  (setq i 0)
+  (while (< i ksteps)
+    (setq j 0)
+    (while (< j ksteps)
+      (setq px (+ cx (* (/ i (float ksteps)) ux) (* (/ j (float ksteps)) vx))
+            py (+ cy (* (/ i (float ksteps)) uy) (* (/ j (float ksteps)) vy))
+            res (pf:evalphase px py imin imax jmin jmax ux uy vx vy
+                              ixlo ixhi iylo iyhi isRect poly))
+      (if (> (car res) kbest)
+        (setq kbest (car res) bestox px bestoy py bres2 res))
+      (setq j (1+ j)))
+    (setq i (1+ i)))
+
+  ;; --- re-center the maximal pattern within the free margin -------
+  (if (and bres2 (> kbest 0))
+    (progn
+      (setq sx (- (- ixhi ixlo) (- (nth 3 bres2) (nth 1 bres2)))
+            sy (- (- iyhi iylo) (- (nth 4 bres2) (nth 2 bres2)))
+            sx (max sx 0.0) sy (max sy 0.0)
+            bestox (+ bestox (- (+ ixlo (* 0.5 sx)) (nth 1 bres2)))
+            bestoy (+ bestoy (- (+ iylo (* 0.5 sy)) (nth 2 bres2))))))
+
+  ;; --- generate, clip, draw at the chosen origin ------------------
   (setq count 0 i imin)
   (while (<= i imax)
     (setq j jmin)
     (while (<= j jmax)
-      (setq px (+ cx (* i ux) (* j vx))
-            py (+ cy (* i uy) (* j vy)))
+      (setq px (+ bestox (* i ux) (* j vx))
+            py (+ bestoy (* i uy) (* j vy)))
       (if (and (>= px (- (car bb) cushion)) (<= px (+ (caddr bb) cushion))
                (>= py (- (cadr bb) cushion)) (<= py (+ (cadddr bb) cushion)))
         (if (pf:allinside
