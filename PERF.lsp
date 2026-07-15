@@ -79,17 +79,19 @@
 ;;; ---- geometry helpers -------------------------------------------
 
 ;;; Point-in-polygon test (ray casting). PT is (x y ..), POLY a list
-;;; of (x y) points.  Returns T when inside.
-(defun pf:ptinpoly (pt poly / x y n i j xi yi xj yj inside)
+;;; of (x y) points.  Returns T when inside.  Walks the list with
+;;; foreach (O(n)); the previous nth-indexed loop was O(n^2) and froze
+;;; on densely sampled boundaries.
+(defun pf:ptinpoly (pt poly / x y inside xi yi xj yj prev)
   (setq x (car pt)  y (cadr pt)
-        n (length poly)  inside nil  i 0  j (1- n))
-  (while (< i n)
-    (setq xi (car (nth i poly)) yi (cadr (nth i poly))
-          xj (car (nth j poly)) yj (cadr (nth j poly)))
+        inside nil  prev (last poly))
+  (foreach v poly
+    (setq xi (car v) yi (cadr v)
+          xj (car prev) yj (cadr prev))
     (if (and (not (eq (> yi y) (> yj y)))
              (< x (+ (/ (* (- xj xi) (- y yi)) (- yj yi)) xi)))
       (setq inside (not inside)))
-    (setq j i  i (1+ i)))
+    (setq prev v))
   inside
 )
 
@@ -308,7 +310,7 @@
 (defun pf:curvepts (en mat / p0 p1 n i pt pts param)
   (setq p0 (vlax-curve-getStartParam en)
         p1 (vlax-curve-getEndParam en)
-        n  256  pts '()  i 0)
+        n  128  pts '()  i 0)
   (while (<= i n)
     (setq param (+ p0 (* (/ (- p1 p0) (float n)) i))
           pt (vlax-curve-getPointAtParam en param))
@@ -317,6 +319,22 @@
              (setq pts (cons (list (car pt) (cadr pt)) pts))))
     (setq i (1+ i)))
   (reverse pts)
+)
+
+;;; T when EN is an LWPOLYLINE whose segments are all straight
+;;; (every bulge is ~zero).  Such boundaries can be clipped against
+;;; their true vertices instead of a dense curve sampling.
+(defun pf:lwnoarcs (en / ed ok)
+  (setq ed (entget en))
+  (if (= "LWPOLYLINE" (cdr (assoc 0 ed)))
+    (progn
+      (setq ok T)
+      (foreach pr ed
+        (if (and (= 42 (car pr)) (> (abs (cdr pr)) 1e-8))
+          (setq ok nil)))
+      ok)
+    nil
+  )
 )
 
 ;;; True WCS vertices of an LWPOLYLINE, else NIL.  MAT as above.
@@ -358,7 +376,14 @@
            (progn
              (if (not (pf:isclosed en))
                (princ "\nNote: boundary not flagged closed - treating its outline as a closed loop."))
-             (list (pf:curvepts en mat) (pf:realverts en mat)))
+             ;; Straight-segment polylines clip against their true
+             ;; vertices (few points = fast); curved boundaries fall
+             ;; back to dense curve sampling.
+             (if (pf:lwnoarcs en)
+               (progn
+                 (setq clip (pf:realverts en mat))
+                 (list clip clip))
+               (list (pf:curvepts en mat) (pf:realverts en mat))))
            (progn (princ "\nThat object cannot be used as a boundary.") nil))
        )
      )
@@ -459,7 +484,7 @@
        lverts cushion det margin hw2 hh2
        imin imax jmin jmax ii jj dx dy
        hx hy gap ixlo ixhi iylo iyhi isRect
-       kbest ksteps res bestox bestoy bres2 sx sy
+       kbest ksteps ncand res bestox bestoy bres2 sx sy
        i j px py count ans needsetup c bres pp follow)
 
   (defun *error* (msg)
@@ -603,8 +628,18 @@
   ;; --- optimize lattice phase to maximize the hole count ----------
   ;; Search translations across one unit cell (spanned by U and V);
   ;; the densest fit wins.  Rectangles skip the polygon test (fast),
-  ;; so they can afford a finer search.
-  (setq kbest -1 ksteps (if isRect 16 6))
+  ;; so they can afford a finer search.  For polygon boundaries the
+  ;; grid coarsens as the candidate count grows so the search stays
+  ;; responsive on large parts with tight spacing.
+  (setq ncand (* (1+ (- imax imin)) (1+ (- jmax jmin))))
+  (if isRect
+    (setq ksteps 16)
+    (progn
+      (setq ksteps (fix (sqrt (/ 3.0e6 (max 1 (* ncand (length poly)))))))
+      (setq ksteps (max 2 (min 6 ksteps)))))
+  (princ (strcat "\nOptimizing pattern fit (" (itoa ncand)
+                 " candidate positions)... "))
+  (setq kbest -1)
   (setq i 0)
   (while (< i ksteps)
     (setq j 0)
