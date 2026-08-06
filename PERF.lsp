@@ -63,6 +63,7 @@
       ;; row pitch: stored 0 means Auto
       (if (setq g (getcfg (strcat *perf-cfgroot* "RowPitch")))
         (setq *perf-rowpitch* (if (> (atof g) 0.0) (atof g) nil)))
+      (if (setq g (getcfg (strcat *perf-cfgroot* "Bar")))     (setq *perf-bar*     (atof g)))
     )
   )
   (princ)
@@ -70,6 +71,10 @@
 
 (defun pf:savecfg ()
   (setcfg (strcat *perf-cfgroot* "Shape")   *perf-shape*)
+  (setcfg (strcat *perf-cfgroot* "Bar")     (rtos (cond (*perf-bar*) (0.3)) 2 8))
+  (if (null *perf-size*)    (setq *perf-size* 0.5))
+  (if (null *perf-spacing*) (setq *perf-spacing* 1.0))
+  (if (null *perf-angle*)   (setq *perf-angle* "60"))
   (setcfg (strcat *perf-cfgroot* "Size")    (rtos *perf-size* 2 8))
   (setcfg (strcat *perf-cfgroot* "Size2")   (rtos (cond (*perf-size2*) (0.0)) 2 8))
   (setcfg (strcat *perf-cfgroot* "Spacing") (rtos *perf-spacing* 2 8))
@@ -81,7 +86,9 @@
 )
 
 (defun pf:havecfg ()
-  (and *perf-shape* *perf-size* *perf-spacing* *perf-angle*)
+  (if (= *perf-shape* "Austin")
+    (and *perf-shape* *perf-bar*)
+    (and *perf-shape* *perf-size* *perf-spacing* *perf-angle*))
 )
 
 ;;; ---- geometry helpers -------------------------------------------
@@ -287,6 +294,243 @@
         (setq pts (cons (pf:xform (car p) (cadr p) cx cy ca sa) pts)))
       pts)
   )
+)
+
+;;; ---- Austin pattern ----------------------------------------------
+;;; An organic random ellipse fill rather than a lattice.  The size
+;;; mix, proportions and orientations below were measured from the
+;;; reference AUSTIN.dxf (682 ellipses, ~46% open area): ten discrete
+;;; ellipse sizes with their observed frequencies, and the observed
+;;; spread of rotations.  The only spacing input is the bar: the
+;;; minimum clear edge-to-edge distance between any two ellipses.
+
+;;; (majorDia minorDia weight), largest first so big shapes are placed
+;;; before small ones fill the gaps between them.
+(setq *perf-austin-sizes*
+  '((4.473 3.130 26) (3.000 2.572 66) (3.000 1.906 87) (2.323 1.768 86)
+    (2.022 1.367 93) (1.882 1.463 46) (1.676 1.000 91) (1.475 1.032 58)
+    (1.447 0.878 48) (0.986 0.743 81)))
+
+;;; (angleDeg weight) as measured in the reference drawing.
+(setq *perf-austin-angles*
+  '((0.0 177) (12.0 12) (16.0 48) (24.0 81) (50.2 58)
+    (51.2 93) (145.0 10) (168.0 3) (180.0 199)))
+
+;;; Lehmer generator - AutoLISP has no rand.  Kept in floats so the
+;;; multiply never loses precision.
+(defun pf:rand ( )
+  (if (or (null *perf-seed*) (<= *perf-seed* 0.0)) (setq *perf-seed* 1234567.0))
+  (setq *perf-seed* (rem (* 16807.0 *perf-seed*) 2147483647.0))
+  (/ *perf-seed* 2147483647.0)
+)
+
+;;; Weighted pick from a table whose last element is the weight.
+(defun pf:wpick (tbl / tot x acc rest pick)
+  (setq tot 0.0)
+  (foreach r tbl (setq tot (+ tot (float (last r)))))
+  (setq x (* (pf:rand) tot) acc 0.0 rest tbl pick (car tbl))
+  (while rest
+    (setq acc (+ acc (float (last (car rest)))))
+    (if (<= x acc)
+      (setq pick (car rest) rest nil)
+      (setq rest (cdr rest))))
+  pick
+)
+
+;;; Do segments P1-P2 and Q1-Q2 cross?
+(defun pf:ccw (a b c)
+  (> (- (* (- (car b) (car a)) (- (cadr c) (cadr a)))
+        (* (- (cadr b) (cadr a)) (- (car c) (car a))))
+     0.0)
+)
+(defun pf:segxseg (p1 p2 q1 q2)
+  (and (not (eq (pf:ccw p1 p2 q1) (pf:ccw p1 p2 q2)))
+       (not (eq (pf:ccw q1 q2 p1) (pf:ccw q1 q2 p2))))
+)
+
+;;; Distance between two segments.
+(defun pf:segsegdist (p1 p2 q1 q2)
+  (if (pf:segxseg p1 p2 q1 q2)
+    0.0
+    (min (pf:segdist p1 q1 q2) (pf:segdist p2 q1 q2)
+         (pf:segdist q1 p1 p2) (pf:segdist q2 p1 p2)))
+)
+
+;;; Each ellipse is treated as the stadium swept by a circle of radius
+;;; B travelling along its major axis.  That stadium contains the
+;;; ellipse, so a stadium gap of BAR guarantees a true gap of at least
+;;; BAR - the pattern is never tighter than asked for.
+;;; Record: (cx cy a b ex ey) with (ex ey) = (a-b) along the major axis.
+
+;;; Grid helpers - a list of rows, each a list of cells, each cell a
+;;; list of records.  Cell size covers the largest possible reach, so
+;;; only the 3x3 neighbourhood ever needs checking.
+(defun pf:mkgrid (nr nc / row g i)
+  (setq row '() i 0)
+  (while (< i nc) (setq row (cons nil row) i (1+ i)))
+  (setq g '() i 0)
+  (while (< i nr) (setq g (cons row g) i (1+ i)))
+  g
+)
+
+(defun pf:gridadd (g r c rec / i j out orow)
+  (setq out '() i 0)
+  (foreach rw g
+    (if (= i r)
+      (progn
+        (setq orow '() j 0)
+        (foreach cell rw
+          (setq orow (cons (if (= j c) (cons rec cell) cell) orow) j (1+ j)))
+        (setq out (cons (reverse orow) out)))
+      (setq out (cons rw out)))
+    (setq i (1+ i)))
+  (reverse out)
+)
+
+;;; Every record in the 3x3 block of cells around (r c).
+(defun pf:gridnear (g r c / rows cells out k m)
+  (setq out '() rows (nthcdr (max 0 (1- r)) g) k 0)
+  (while (and rows (< k 3))
+    (setq cells (nthcdr (max 0 (1- c)) (car rows)) m 0)
+    (while (and cells (< m 3))
+      (foreach e (car cells) (setq out (cons e out)))
+      (setq cells (cdr cells) m (1+ m)))
+    (setq rows (cdr rows) k (1+ k)))
+  out
+)
+
+;;; Is the candidate ellipse clear of every nearby placed one?
+(defun pf:austin-clear (cx cy a b ex ey bar near / ok o oa ob ocx ocy dd lim)
+  (setq ok T)
+  (while (and ok near)
+    (setq o (car near) near (cdr near)
+          ocx (nth 0 o) ocy (nth 1 o) oa (nth 2 o) ob (nth 3 o)
+          dd  (+ (* (- cx ocx) (- cx ocx)) (* (- cy ocy) (- cy ocy)))
+          lim (+ a oa bar))
+    ;; cheap squared-distance reject before the stadium maths
+    (if (<= dd (* lim lim))
+      (if (< (- (pf:segsegdist
+                  (list (- cx ex) (- cy ey)) (list (+ cx ex) (+ cy ey))
+                  (list (- ocx (nth 4 o)) (- ocy (nth 5 o)))
+                  (list (+ ocx (nth 4 o)) (+ ocy (nth 5 o))))
+                b ob)
+             bar)
+        (setq ok nil))))
+  ok
+)
+
+;;; Does the whole ellipse sit inside the boundary?
+(defun pf:austin-inside (cx cy a b ca sa poly isRect bb / hx hy pts k t2 ok)
+  (setq hx (sqrt (+ (* a ca a ca) (* b sa b sa)))
+        hy (sqrt (+ (* a sa a sa) (* b ca b ca))))
+  (if isRect
+    (and (>= (- cx hx) (car bb))  (<= (+ cx hx) (caddr bb))
+         (>= (- cy hy) (cadr bb)) (<= (+ cy hy) (cadddr bb)))
+    (progn
+      (setq pts '() k 0)
+      (while (< k 12)
+        (setq t2 (* k (/ pi 6.0)))
+        (setq pts (cons (list (+ cx (- (* a (cos t2) ca) (* b (sin t2) sa)))
+                              (+ cy (+ (* a (cos t2) sa) (* b (sin t2) ca))))
+                        pts))
+        (setq k (1+ k)))
+      (pf:allinside pts poly))
+  )
+)
+
+;;; Create the ELLIPSE entity.
+(defun pf:drawellipse (cx cy a b ang)
+  (entmake (list '(0 . "ELLIPSE") '(100 . "AcDbEntity") '(100 . "AcDbEllipse")
+                 (list 10 cx cy 0.0)
+                 (list 11 (* a (cos ang)) (* a (sin ang)) 0.0)
+                 '(210 0.0 0.0 1.0)
+                 (cons 40 (/ b a))
+                 (cons 41 0.0)
+                 (cons 42 (* 2.0 pi))))
+)
+
+;;; Fill POLY with the Austin ellipse pattern.
+(defun pf:austin (poly bb bar isRect
+                  / width height maxa cell nr nc grid placed
+                  meang totw n want got tries cls M m ang ca sa
+                  a b ex ey hx hy cx cy r c near fails cnt)
+  (setq width  (- (caddr bb) (car bb))
+        height (- (cadddr bb) (cadr bb))
+        maxa   0.0 totw 0.0 meang 0.0)
+  (foreach s *perf-austin-sizes*
+    (setq maxa (max maxa (* 0.5 (car s)))
+          totw (+ totw (float (caddr s)))))
+  (foreach s *perf-austin-sizes*
+    (setq meang (+ meang (* (float (caddr s)) pi
+                            (+ (* 0.5 (car s))  (* 0.5 bar))
+                            (+ (* 0.5 (cadr s)) (* 0.5 bar))))))
+  (setq meang (/ meang totw)
+        cell  (+ (* 2.0 maxa) bar)
+        nc    (+ 2 (fix (/ width cell)))
+        nr    (+ 2 (fix (/ height cell)))
+        grid  (pf:mkgrid nr nc)
+        placed 0
+        n     (fix (/ (* 0.62 width height) meang)))
+  (princ (strcat "\nGenerating Austin pattern (target ~" (itoa n) " ellipses)... "))
+
+  ;; --- proportional pass, largest sizes first -------------------
+  (foreach s *perf-austin-sizes*
+    (setq M (car s) m (cadr s)
+          want (fix (+ 0.5 (/ (* n (float (caddr s))) totw)))
+          got 0 tries 0)
+    (while (and (< got want) (< tries (* want 40)))
+      (setq tries (1+ tries))
+      (setq ang (+ (* pi (/ (car (pf:wpick *perf-austin-angles*)) 180.0))
+                   (* (- (pf:rand) 0.5) 0.28))   ; small jitter
+            ca (cos ang) sa (sin ang)
+            a  (* 0.5 M) b (* 0.5 m)
+            ex (* (- a b) ca) ey (* (- a b) sa)
+            hx (sqrt (+ (* a ca a ca) (* b sa b sa)))
+            hy (sqrt (+ (* a sa a sa) (* b ca b ca))))
+      (if (and (> (- width  (* 2.0 hx)) 0.0)
+               (> (- height (* 2.0 hy)) 0.0))
+        (progn
+          (setq cx (+ (car bb)  hx (* (pf:rand) (- width  (* 2.0 hx))))
+                cy (+ (cadr bb) hy (* (pf:rand) (- height (* 2.0 hy))))
+                c  (fix (/ (- cx (car bb))  cell))
+                r  (fix (/ (- cy (cadr bb)) cell))
+                near (pf:gridnear grid r c))
+          (if (and (pf:austin-clear cx cy a b ex ey bar near)
+                   (pf:austin-inside cx cy a b ca sa poly isRect bb))
+            (progn
+              (setq grid (pf:gridadd grid r c (list cx cy a b ex ey))
+                    placed (1+ placed))
+              (pf:drawellipse cx cy a b ang)
+              (setq got (1+ got))))))))
+
+  ;; --- top-up pass: keep filling gaps until it stops paying off --
+  (setq fails 0)
+  (while (< fails 1200)
+    (setq cls (pf:wpick *perf-austin-sizes*)
+          M (car cls) m (cadr cls)
+          ang (+ (* pi (/ (car (pf:wpick *perf-austin-angles*)) 180.0))
+                 (* (- (pf:rand) 0.5) 0.28))
+          ca (cos ang) sa (sin ang)
+          a (* 0.5 M) b (* 0.5 m)
+          ex (* (- a b) ca) ey (* (- a b) sa)
+          hx (sqrt (+ (* a ca a ca) (* b sa b sa)))
+          hy (sqrt (+ (* a sa a sa) (* b ca b ca))))
+    (if (and (> (- width (* 2.0 hx)) 0.0) (> (- height (* 2.0 hy)) 0.0))
+      (progn
+        (setq cx (+ (car bb)  hx (* (pf:rand) (- width  (* 2.0 hx))))
+              cy (+ (cadr bb) hy (* (pf:rand) (- height (* 2.0 hy))))
+              c  (fix (/ (- cx (car bb))  cell))
+              r  (fix (/ (- cy (cadr bb)) cell))
+              near (pf:gridnear grid r c))
+        (if (and (pf:austin-clear cx cy a b ex ey bar near)
+                 (pf:austin-inside cx cy a b ca sa poly isRect bb))
+          (progn
+            (setq grid (pf:gridadd grid r c (list cx cy a b ex ey))
+                  placed (1+ placed) fails 0)
+            (pf:drawellipse cx cy a b ang))
+          (setq fails (1+ fails))))
+      (setq fails (1+ fails))))
+  placed
 )
 
 ;;; ---- minimum web (bar) checking ---------------------------------
@@ -564,14 +808,27 @@
 )
 
 (defun pf:setup ( / tmp)
-  (initget "Circle Square Rectangle Hexagon Diamond SLot")
+  (initget "Circle Square Rectangle Hexagon Diamond SLot Austin")
   (setq tmp (getkword
-              (strcat "\nHole shape [Circle/Square/Rectangle/Hexagon/Diamond/SLot] <"
+              (strcat "\nHole shape [Circle/Square/Rectangle/Hexagon/Diamond/SLot/Austin] <"
                       (cond (*perf-shape*) ("Circle")) ">: ")))
   (if (= tmp "SLot") (setq tmp "Slot"))
   (if tmp (setq *perf-shape* tmp)
           (if (null *perf-shape*) (setq *perf-shape* "Circle")))
 
+  (if (= *perf-shape* "Austin")
+   ;; Austin is an organic random fill - its only input is the bar.
+   (progn
+     (initget 6)
+     (setq tmp (getdist (strcat "\nBar - minimum clear edge-to-edge spacing (in) <"
+                                (rtos (cond (*perf-bar*) (0.3)) 2 4) ">: ")))
+     (if tmp (setq *perf-bar* tmp) (if (null *perf-bar*) (setq *perf-bar* 0.3)))
+     (pf:savecfg)
+     (princ (strcat "\nAustin pattern: 10 ellipse sizes 0.986\" to 4.473\", bar "
+                    (rtos *perf-bar* 2 4) "\".")))
+
+   ;; --- all lattice shapes ---------------------------------------
+   (progn
   (cond
     ((member *perf-shape* '("Rectangle" "Slot"))
      (initget 6)
@@ -622,6 +879,7 @@
   (pf:savecfg)
   ;; angle affects which neighbors are closest, so check once it is known
   (pf:checkweb)
+   ))
   (princ)
 )
 
@@ -852,7 +1110,10 @@
   (setq needsetup T)
   (if (pf:havecfg)
     (progn
-      (princ (strcat "\nCurrent pattern: " *perf-shape*
+      (if (= *perf-shape* "Austin")
+       (princ (strcat "\nCurrent pattern: Austin ellipses  bar="
+                      (rtos *perf-bar* 2 4)))
+       (princ (strcat "\nCurrent pattern: " *perf-shape*
                      "  size=" (rtos *perf-size* 2 4)
                      (if (member *perf-shape* '("Rectangle" "Slot"))
                        (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
@@ -860,7 +1121,7 @@
                      "  rows=" (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
                      "  angle=" *perf-angle*
                      (if (and *perf-thick* (> *perf-thick* 0.0))
-                       (strcat "  material=" (rtos *perf-thick* 2 4)) "")))
+                       (strcat "  material=" (rtos *perf-thick* 2 4)) ""))))
       (initget "Continue Redefine")
       (setq ans (getkword "\nUse this pattern? [Continue/Redefine] <Continue>: "))
       (if (or (null ans) (= ans "Continue")) (setq needsetup nil))
@@ -869,7 +1130,7 @@
   (if needsetup
     (pf:setup)
     ;; reused pattern still gets verified against the stored thickness
-    (pf:checkweb))
+    (if (/= *perf-shape* "Austin") (pf:checkweb)))
 
   ;; --- get the fill boundary --------------------------------------
   (setq bres (pf:getboundary))
@@ -883,6 +1144,18 @@
         cx (* 0.5 (+ (car bb) (caddr bb)))
         cy (* 0.5 (+ (cadr bb) (cadddr bb)))
         grot 0.0  follow nil)
+
+  (if (= *perf-shape* "Austin")
+   ;; ==== Austin: organic random ellipse fill ======================
+   (progn
+     (setq isRect (and realverts (pf:isaxisrect realverts))
+           count  (pf:austin poly bb *perf-bar* isRect))
+     (princ (strcat "\nDone - " (itoa count)
+                    " Austin ellipses placed (bar "
+                    (rtos *perf-bar* 2 4) "\").")))
+
+   ;; ==== all lattice shapes ======================================
+   (progn
 
   ;; --- offer to follow an angled boundary edge --------------------
   (if (and realverts (pf:hasangle realverts))
@@ -1043,6 +1316,7 @@
     (setq i (1+ i)))
 
   (princ (strcat "\nDone - " (itoa count) " " *perf-shape* " hole(s) placed."))
+   ))
   (princ)
 )
 
