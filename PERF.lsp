@@ -458,9 +458,13 @@
 
 ;;; Fill POLY with the Austin ellipse pattern.
 (defun pf:austin (poly bb bar isRect
+                  ;; NOTE: AutoLISP symbols are case-insensitive, so a
+                  ;; major/minor pair must not be named M and m - they
+                  ;; would be the same variable and every ellipse would
+                  ;; come out a circle.
                   / width height maxa cell nr nc grid placed
-                  meang totw n want got tries cls M m ang ca sa
-                  a b ex ey hx hy cx cy r c near fails cnt)
+                  meang totw n want got tries cls majd mind ang ca sa
+                  a b ex ey hx hy cx cy r c near fails)
   (setq width  (- (caddr bb) (car bb))
         height (- (cadddr bb) (cadr bb))
         maxa   0.0 totw 0.0 meang 0.0)
@@ -482,7 +486,7 @@
 
   ;; --- proportional pass, largest sizes first -------------------
   (foreach s *perf-austin-sizes*
-    (setq M (car s) m (cadr s)
+    (setq majd (car s) mind (cadr s)
           want (fix (+ 0.5 (/ (* n (float (caddr s))) totw)))
           got 0 tries 0)
     (while (and (< got want) (< tries (* want 40)))
@@ -490,7 +494,7 @@
       (setq ang (+ (* pi (/ (car (pf:wpick *perf-austin-angles*)) 180.0))
                    (* (- (pf:rand) 0.5) 0.28))   ; small jitter
             ca (cos ang) sa (sin ang)
-            a  (* 0.5 M) b (* 0.5 m)
+            a  (* 0.5 majd) b (* 0.5 mind)
             ex (* (- a b) ca) ey (* (- a b) sa)
             hx (sqrt (+ (* a ca a ca) (* b sa b sa)))
             hy (sqrt (+ (* a sa a sa) (* b ca b ca))))
@@ -514,11 +518,11 @@
   (setq fails 0)
   (while (< fails 1200)
     (setq cls (pf:wpick *perf-austin-sizes*)
-          M (car cls) m (cadr cls)
+          majd (car cls) mind (cadr cls)
           ang (+ (* pi (/ (car (pf:wpick *perf-austin-angles*)) 180.0))
                  (* (- (pf:rand) 0.5) 0.28))
           ca (cos ang) sa (sin ang)
-          a (* 0.5 M) b (* 0.5 m)
+          a (* 0.5 majd) b (* 0.5 mind)
           ex (* (- a b) ca) ey (* (- a b) sa)
           hx (sqrt (+ (* a ca a ca) (* b sa b sa)))
           hy (sqrt (+ (* a sa a sa) (* b ca b ca))))
