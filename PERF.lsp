@@ -60,6 +60,9 @@
       (if (setq g (getcfg (strcat *perf-cfgroot* "Angle")))   (setq *perf-angle*   g))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Method")))  (setq *perf-method*  g))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Thick")))   (setq *perf-thick*   (atof g)))
+      ;; row pitch: stored 0 means Auto
+      (if (setq g (getcfg (strcat *perf-cfgroot* "RowPitch")))
+        (setq *perf-rowpitch* (if (> (atof g) 0.0) (atof g) nil)))
     )
   )
   (princ)
@@ -73,6 +76,7 @@
   (setcfg (strcat *perf-cfgroot* "Angle")   *perf-angle*)
   (setcfg (strcat *perf-cfgroot* "Method")  (cond (*perf-method*) ("Select")))
   (setcfg (strcat *perf-cfgroot* "Thick")   (rtos (cond (*perf-thick*) (0.0)) 2 8))
+  (setcfg (strcat *perf-cfgroot* "RowPitch")(rtos (cond (*perf-rowpitch*) (0.0)) 2 8))
   (princ)
 )
 
@@ -193,18 +197,40 @@
 )
 
 ;;; Lattice description (Ux Uy Vx Vy rowAngle) for an angle keyword.
-;;; U = in-row step, V = row-to-row step, rowAngle = hole alignment.
-(defun pf:lattice (angle s / c s60 c60)
-  (setq c (* s (cos (/ pi 4.0)))
-        s60 (* s (sin (/ pi 3.0)))
-        c60 (* s 0.5))
+;;; U = step along a row, V = step to the next row, rowAngle = hole
+;;; alignment.  S is the along-row pitch, T the row-to-row pitch; the
+;;; two are independent so long holes can sit close together across
+;;; rows without forcing a huge gap along them.  With T at its default
+;;; (S * sin60 for 30/60, S for straight/45) these reduce exactly to
+;;; the classic equilateral / square patterns.
+(defun pf:lattice (angle s tt / c d)
+  (setq c (* s  (cos (/ pi 4.0)))
+        d (* tt (cos (/ pi 4.0))))
   (cond
-    ((= angle "Straight") (list s 0.0  0.0 s  0.0))
-    ((= angle "45")       (list c c  (- c) c  (/ pi 4.0)))
-    ((= angle "60")       (list s 0.0  c60 s60  0.0))
-    ((= angle "30")       (list 0.0 s  s60 c60  (/ pi 2.0)))
-    (T (list s 0.0  0.0 s  0.0))
+    ((= angle "Straight") (list s 0.0  0.0 tt  0.0))
+    ((= angle "45")       (list c c  (- d) d  (/ pi 4.0)))
+    ((= angle "60")       (list s 0.0  (* 0.5 s) tt  0.0))
+    ((= angle "30")       (list 0.0 s  tt (* 0.5 s)  (/ pi 2.0)))
+    (T (list s 0.0  0.0 tt  0.0))
   )
+)
+
+;;; Hole extent across the rows divided by its extent along them.
+;;; 1.0 for the symmetric shapes, < 1 for rectangles and slots.
+(defun pf:aspect (shape size size2)
+  (if (and (member shape '("Rectangle" "Slot")) size2 (> size 0.0))
+    (/ size2 size)
+    1.0)
+)
+
+;;; Row pitch that reproduces the standard pattern proportions.
+;;; Scaling by the hole's aspect keeps long holes packed as tightly
+;;; across the rows as round ones are, instead of leaving the row gap
+;;; driven by the hole's length.
+(defun pf:defaultrow (shape size size2 angle s)
+  (* s
+     (pf:aspect shape size size2)
+     (if (member angle '("30" "60")) (sin (/ pi 3.0)) 1.0))
 )
 
 ;;; ---- drawing -----------------------------------------------------
@@ -307,14 +333,16 @@
   )
 )
 
-;;; Smallest clear web across all neighboring holes in the lattice.
+;;; Smallest clear web across neighboring holes in the lattice.
 ;;; Checks every lattice combination within +/-2 steps, which always
 ;;; contains the closest neighbors.  Because the holes and the lattice
 ;;; rotate together, working in the hole's local frame makes this
 ;;; independent of any edge-follow rotation.
-(defun pf:minweb (shape size size2 spacing angle
-                  / lat ux uy vx vy ra ca sa lv v2 i j dx dy lx ly g best)
-  (setq lat (pf:lattice angle spacing)
+;;; MODE 0 = every neighbor, 1 = along-row only (set by S),
+;;;      2 = other rows only (set by T).
+(defun pf:webscan (shape size size2 s tt angle mode
+                   / lat ux uy vx vy ra ca sa lv v2 i j dx dy lx ly g best)
+  (setq lat (pf:lattice angle s tt)
         ux (nth 0 lat) uy (nth 1 lat)
         vx (nth 2 lat) vy (nth 3 lat)
         ra (nth 4 lat) ca (cos ra) sa (sin ra)
@@ -328,7 +356,10 @@
   (while (<= i 2)
     (setq j -2)
     (while (<= j 2)
-      (if (not (and (= i 0) (= j 0)))
+      (if (and (not (and (= i 0) (= j 0)))
+               (or (= mode 0)
+                   (and (= mode 1) (= j 0))
+                   (and (= mode 2) (/= j 0))))
         (progn
           (setq dx (+ (* i ux) (* j vx))
                 dy (+ (* i uy) (* j vy))
@@ -341,40 +372,79 @@
   best
 )
 
-;;; Smallest center-to-center spacing whose web meets THICK.
-;;; The web grows monotonically with spacing, so a bisection is exact;
-;;; the result is rounded UP to 4 decimals so it truly satisfies.
-(defun pf:minspacing (shape size size2 angle thick / s2 lo hi mid k)
+(defun pf:minweb (shape size size2 s tt angle)
+  (pf:webscan shape size size2 s tt angle 0)
+)
+
+;;; Smallest along-row pitch whose web meets THICK.  The web grows
+;;; monotonically with the pitch, so bisection is exact; results are
+;;; rounded UP to 4 decimals so they truly satisfy.
+(defun pf:minalong (shape size size2 angle thick / s2 lo hi mid k)
   (setq s2 (cond (size2) (0.0))
         lo 1e-6
         hi (max 1e-3 (+ size s2 thick))
         k  0)
-  (while (and (< (pf:minweb shape size s2 hi angle) thick) (< k 60))
+  (while (and (< (pf:webscan shape size s2 hi hi angle 1) thick) (< k 60))
     (setq hi (* hi 2.0) k (1+ k)))
   (setq k 0)
   (while (< k 40)
     (setq mid (* 0.5 (+ lo hi)))
-    (if (< (pf:minweb shape size s2 mid angle) thick)
+    (if (< (pf:webscan shape size s2 mid mid angle 1) thick)
       (setq lo mid)
       (setq hi mid))
     (setq k (1+ k)))
   (/ (float (fix (+ (* hi 10000.0) 0.9999))) 10000.0)
 )
 
+;;; Smallest row pitch whose web meets THICK, for a fixed along-row
+;;; pitch S.  Same monotonicity, same rounding.
+(defun pf:minrow (shape size size2 s angle thick / s2 lo hi mid k)
+  (setq s2 (cond (size2) (0.0))
+        lo 1e-6
+        hi (max 1e-3 (+ size s2 thick))
+        k  0)
+  (while (and (< (pf:webscan shape size s2 s hi angle 2) thick) (< k 60))
+    (setq hi (* hi 2.0) k (1+ k)))
+  (setq k 0)
+  (while (< k 40)
+    (setq mid (* 0.5 (+ lo hi)))
+    (if (< (pf:webscan shape size s2 s mid angle 2) thick)
+      (setq lo mid)
+      (setq hi mid))
+    (setq k (1+ k)))
+  (/ (float (fix (+ (* hi 10000.0) 0.9999))) 10000.0)
+)
+
+;;; Row pitch actually used: the explicit value when the user set one,
+;;; otherwise the standard proportion opened up just enough to satisfy
+;;; the bar rule.  Auto therefore packs rows as tightly as the material
+;;; allows without ever violating the minimum web.
+(defun pf:effrow ( / base thk)
+  (cond
+    (*perf-rowpitch*)
+    (T
+     (setq base (pf:defaultrow *perf-shape* *perf-size* *perf-size2*
+                               *perf-angle* *perf-spacing*)
+           thk  (cond (*perf-thick*) (0.0)))
+     (max base (pf:minrow *perf-shape* *perf-size* *perf-size2*
+                          *perf-spacing* *perf-angle* thk)))
+  )
+)
+
 ;;; Verify the current spacing against the stored material thickness.
 ;;; Loops until the pattern passes or the user overrides.
-(defun pf:checkweb ( / web minc ans tmp done)
+(defun pf:checkweb ( / tt web minc ans tmp done s2)
   (if (and *perf-thick* (> *perf-thick* 0.0) (pf:havecfg))
     (progn
-      (setq done nil)
+      (setq s2 (cond (*perf-size2*) (0.0)) done nil)
+      ;; --- along-row pitch --------------------------------------
       (while (not done)
-        (setq web (pf:minweb *perf-shape* *perf-size*
-                             (cond (*perf-size2*) (0.0))
-                             *perf-spacing* *perf-angle*))
+        (setq web (pf:webscan *perf-shape* *perf-size* s2
+                              *perf-spacing* *perf-spacing* *perf-angle* 1))
         (if (< web (- *perf-thick* 1e-9))
           (progn
-            (setq minc (pf:minspacing *perf-shape* *perf-size* *perf-size2*
-                                      *perf-angle* *perf-thick*))
+            (setq minc (pf:minalong *perf-shape* *perf-size* *perf-size2*
+                                    *perf-angle* *perf-thick*))
             (princ "\n\n*** MINIMUM BAR WARNING ***")
             (princ "\nThe web (bar) is the clear material left between holes.  It")
             (princ "\nshould be at least the material thickness or the sheet tears")
@@ -382,7 +452,7 @@
             (princ (strcat "\n  Material thickness : " (rtos *perf-thick* 2 4) "\""))
             (princ (strcat "\n  Spacing " (rtos *perf-spacing* 2 4)
                            "\" at " *perf-angle*
-                           " gives a bar of only " (rtos web 2 4) "\""))
+                           " leaves only " (rtos web 2 4) "\" along the rows"))
             (princ (strcat "\n  Minimum center-to-center for this pattern: "
                            (rtos minc 2 4) "\""))
             (princ (strcat "\n  [Minimum]  = use " (rtos minc 2 4) "\""))
@@ -404,10 +474,59 @@
                (princ (strcat "\nSpacing set to " (rtos minc 2 4) "\"."))
                (setq done T)))
             (pf:savecfg))
+          (setq done T)))
+
+      ;; --- row pitch (only an explicit value can violate) --------
+      (setq done nil)
+      (while (not done)
+        (setq tt  (pf:effrow)
+              web (pf:webscan *perf-shape* *perf-size* s2
+                              *perf-spacing* tt *perf-angle* 2))
+        (if (< web (- *perf-thick* 1e-9))
           (progn
-            (princ (strcat "\nBar check OK - clear web is " (rtos web 2 4)
-                           "\" (material " (rtos *perf-thick* 2 4) "\")."))
-            (setq done T))))
+            (setq minc (pf:minrow *perf-shape* *perf-size* *perf-size2*
+                                  *perf-spacing* *perf-angle* *perf-thick*))
+            (princ "\n\n*** MINIMUM BAR WARNING (row spacing) ***")
+            (princ (strcat "\n  Row spacing " (rtos tt 2 4)
+                           "\" leaves only " (rtos web 2 4)
+                           "\" between rows (material "
+                           (rtos *perf-thick* 2 4) "\")."))
+            (princ (strcat "\n  Minimum row spacing for this pattern: "
+                           (rtos minc 2 4) "\""))
+            (princ (strcat "\n  [Minimum]  = use " (rtos minc 2 4) "\""))
+            (princ "\n  [New]      = type a different row spacing")
+            (princ "\n  [Auto]     = let the pattern choose the tightest legal row")
+            (princ "\n  [Override] = keep the current row spacing anyway")
+            (initget "Minimum New Auto Override")
+            (setq ans (getkword "\nChoose [Minimum/New/Auto/Override] <Minimum>: "))
+            (cond
+              ((= ans "Override")
+               (princ "\nContinuing below minimum bar (override).")
+               (setq done T))
+              ((= ans "Auto")
+               (setq *perf-rowpitch* nil)
+               (princ "\nRow spacing set to Auto."))
+              ((= ans "New")
+               (initget 6)
+               (setq tmp (getdist (strcat "\nNew row spacing (in) <"
+                                          (rtos minc 2 4) ">: ")))
+               (setq *perf-rowpitch* (cond (tmp) (minc))))
+              (T
+               (setq *perf-rowpitch* minc)
+               (princ (strcat "\nRow spacing set to " (rtos minc 2 4) "\"."))
+               (setq done T)))
+            (pf:savecfg))
+          (setq done T)))
+
+      ;; --- summary ----------------------------------------------
+      (setq tt  (pf:effrow)
+            web (pf:minweb *perf-shape* *perf-size* s2
+                           *perf-spacing* tt *perf-angle*))
+      (princ (strcat "\nPattern: " (rtos *perf-spacing* 2 4)
+                     "\" along rows, " (rtos tt 2 4) "\" between rows"
+                     (if *perf-rowpitch* "" " (auto)")
+                     " - clear bar " (rtos web 2 4)
+                     "\" (material " (rtos *perf-thick* 2 4) "\")."))
     )
   )
   (princ)
@@ -488,6 +607,17 @@
   (setq tmp (getkword (strcat "\nPattern angle [Straight/30/45/60] <"
                               (cond (*perf-angle*) ("60")) ">: ")))
   (if tmp (setq *perf-angle* tmp) (if (null *perf-angle*) (setq *perf-angle* "60")))
+
+  ;; Row pitch: Auto keeps the standard pattern proportions (and packs
+  ;; long holes tightly across the rows) while honouring the bar rule.
+  (initget "Auto")
+  (setq tmp (getdist (strcat "\nSpacing between rows (in) or [Auto] <"
+                             (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
+                             ">: ")))
+  (cond
+    ((= tmp "Auto") (setq *perf-rowpitch* nil))
+    ((numberp tmp)  (setq *perf-rowpitch* tmp))
+  )
 
   (pf:savecfg)
   ;; angle affects which neighbors are closest, so check once it is known
@@ -702,7 +832,7 @@
 
 (defun c:PERF
     (/ *error* poly realverts bb width height cx cy
-       lat ux uy vx vy rowang grot ca0 sa0
+       lat ux uy vx vy rowang rowpitch grot ca0 sa0
        longIsX rowsAlongX rowsOnLong dec
        lverts cushion det margin hw2 hh2
        imin imax jmin jmax ii jj dx dy
@@ -727,6 +857,7 @@
                      (if (member *perf-shape* '("Rectangle" "Slot"))
                        (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
                      "  spacing=" (rtos *perf-spacing* 2 4)
+                     "  rows=" (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
                      "  angle=" *perf-angle*
                      (if (and *perf-thick* (> *perf-thick* 0.0))
                        (strcat "  material=" (rtos *perf-thick* 2 4)) "")))
@@ -809,7 +940,8 @@
   )
 
   ;; --- build lattice & local hole geometry, apply global rotation -
-  (setq lat (pf:lattice *perf-angle* *perf-spacing*)
+  (setq rowpitch (pf:effrow)
+        lat (pf:lattice *perf-angle* *perf-spacing* rowpitch)
         ux (nth 0 lat) uy (nth 1 lat)
         vx (nth 2 lat) vy (nth 3 lat)
         rowang (+ (nth 4 lat) grot)
@@ -823,7 +955,7 @@
 
   ;; index range: invert [U V] against expanded bbox corners
   (setq det (- (* ux vy) (* uy vx))
-        margin (+ cushion *perf-spacing*)
+        margin (+ cushion (max *perf-spacing* rowpitch))
         hw2 (+ (* 0.5 width) margin)
         hh2 (+ (* 0.5 height) margin))
   (setq imin 1e30 imax -1e30 jmin 1e30 jmax -1e30)
