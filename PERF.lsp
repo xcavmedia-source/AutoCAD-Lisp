@@ -263,13 +263,32 @@
 
 ;;; ---- interactive pattern setup ----------------------------------
 
+;;; Prompt text for the single-value shapes.
 (defun pf:sizeprompt (shape)
   (cond
-    ((= shape "Circle")  "\nHole diameter (in) <")
+    ((= shape "Circle")  "\nCircle diameter (in) <")
     ((= shape "Square")  "\nSquare side length (in) <")
     ((= shape "Hexagon") "\nHexagon size across flats (in) <")
     ((= shape "Diamond") "\nDiamond point-to-point size (in) <")
     (T "\nHole size (in) <")
+  )
+)
+
+;;; Prompt text for the first of the two-value shapes.
+(defun pf:lenprompt (shape)
+  (cond
+    ((= shape "Rectangle") "\nRectangle length (in) <")
+    ((= shape "Slot")      "\nSlot overall length (in, includes end caps) <")
+    (T "\nHole length (in) <")
+  )
+)
+
+;;; Prompt text for the second of the two-value shapes.
+(defun pf:widprompt (shape)
+  (cond
+    ((= shape "Rectangle") "\nRectangle width (in) <")
+    ((= shape "Slot")      "\nSlot width (in) <")
+    (T "\nHole width (in) <")
   )
 )
 
@@ -285,11 +304,11 @@
   (cond
     ((member *perf-shape* '("Rectangle" "Slot"))
      (initget 6)
-     (setq tmp (getdist (strcat "\n" *perf-shape* " overall length (in) <"
+     (setq tmp (getdist (strcat (pf:lenprompt *perf-shape*)
                                 (rtos (cond (*perf-size*) (1.0)) 2 4) ">: ")))
      (if tmp (setq *perf-size* tmp) (if (null *perf-size*) (setq *perf-size* 1.0)))
      (initget 6)
-     (setq tmp (getdist (strcat "\n" *perf-shape* " width (in) <"
+     (setq tmp (getdist (strcat (pf:widprompt *perf-shape*)
                                 (rtos (cond (*perf-size2*) (0.5)) 2 4) ">: ")))
      (if tmp (setq *perf-size2* tmp) (if (null *perf-size2*) (setq *perf-size2* 0.5)))
      (if (and (= *perf-shape* "Slot") (<= *perf-size* *perf-size2*))
