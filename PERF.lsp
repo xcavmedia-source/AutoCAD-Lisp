@@ -146,9 +146,13 @@
      (setq hd (* 0.5 size))
      (list (list hd 0.0) (list 0.0 hd) (list (- hd) 0.0) (list 0.0 (- hd))))
     ((= shape "Hexagon")
+     ;; Vertices offset 30 deg so the FLAT sides face the six lattice
+     ;; neighbors (honeycomb orientation, pointy-top).  With vertices
+     ;; at 0/60/... the points face the neighbors and adjacent holes
+     ;; interlock into a star pattern once size approaches spacing.
      (setq r (/ size (sqrt 3.0)) pts '() k 0)
      (while (< k 6)
-       (setq ang (* k (/ pi 3.0)))
+       (setq ang (+ (* k (/ pi 3.0)) (/ pi 6.0)))
        (setq pts (cons (list (* r (cos ang)) (* r (sin ang))) pts))
        (setq k (1+ k)))
      (reverse pts))
