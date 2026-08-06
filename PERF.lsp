@@ -387,11 +387,18 @@
   (reverse out)
 )
 
+;;; Drop the first N elements of LST.  AutoLISP has no nthcdr.
+(defun pf:nthcdr (n lst)
+  (while (and (> n 0) lst)
+    (setq lst (cdr lst) n (1- n)))
+  lst
+)
+
 ;;; Every record in the 3x3 block of cells around (r c).
 (defun pf:gridnear (g r c / rows cells out k m)
-  (setq out '() rows (nthcdr (max 0 (1- r)) g) k 0)
+  (setq out '() rows (pf:nthcdr (max 0 (1- r)) g) k 0)
   (while (and rows (< k 3))
-    (setq cells (nthcdr (max 0 (1- c)) (car rows)) m 0)
+    (setq cells (pf:nthcdr (max 0 (1- c)) (car rows)) m 0)
     (while (and cells (< m 3))
       (foreach e (car cells) (setq out (cons e out)))
       (setq cells (cdr cells) m (1+ m)))
