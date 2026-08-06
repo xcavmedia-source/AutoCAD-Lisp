@@ -227,37 +227,43 @@
 
 
 ;;; ============================================================
-;;; HOLEGRID  -  snap selected holes onto a regular X / Y grid
-;;;              handles both straight and staggered patterns
+;;; HOLEGRID  -  rebuild selected holes onto a regular X / Y grid
+;;;              handles both straight and staggered patterns and
+;;;              fills short columns to match the longest column
 ;;; ============================================================
 ;;;
-;;; Strategy: nearest-grid-point.
-;;;   Each hole independently snaps to the closest ideal grid
-;;;   position derived from the anchor.  No clustering is used
-;;;   for placement, so Y drift inside a row cannot scatter holes
-;;;   across wrong rows.
+;;; Strategy: index-then-rebuild (immune to error accumulation).
 ;;;
-;;;   1. Anchor  = hole with the highest Y; ties broken by min X.
-;;;   2. Stagger = detected by comparing the leftmost-X of the
-;;;                first two Y-groups.  If they differ by ~xsp/2
-;;;                the layout is treated as a staggered (brick)
-;;;                pattern and odd rows are offset by xsp/2.
-;;;   3. Place   = for every hole compute
-;;;                  row = round((ay - oy) / ysp)
-;;;                  col = round((ox - ax [- xsp/2 if odd row]) / xsp)
-;;;                and move the hole to that exact grid point.
+;;;   1. ROW index comes from COUNTING rows, not dividing distance.
+;;;      Holes are clustered by Y (a new row starts wherever there
+;;;      is a vertical gap), giving each hole a row number 0,1,2...
+;;;      top to bottom.  Because the index is a count, it can never
+;;;      drift the way round((anchorY-holeY)/ysp) does down a tall
+;;;      sheet - that was what piled holes on top of each other.
+;;;
+;;;   2. ANCHOR = the top-left hole (row 0, min X).  It stays put;
+;;;      every other hole is regenerated from the anchor using the
+;;;      X / Y spacing you type.
+;;;
+;;;   3. STAGGER is detected by comparing row 0 and row 1 left edges.
+;;;      If they differ by ~xsp/2 the pattern is treated as a
+;;;      staggered (brick) layout: odd rows are offset by exactly
+;;;      xsp/2.  Each hole keeps its own diameter (mixed sizes OK).
+;;;
+;;;   4. FILL - every column that has at least one hole is completed
+;;;      down to the longest column, adding circles that copy the
+;;;      radius + layer of the nearest existing hole in that column.
 ;;; ============================================================
 (defun c:HOLEGRID
     (/ *error* acadobj doc space
        ss xsp ysp
-       i ent obj c objs ytol
-       all-sorted row0 row1 ax ay
-       raw-stagger stagger staggered
-       ox oy row col nx ny
-       hole-rad hole-layer
-       occupied max-row all-cols
-       ci r fill-x fill-y new-obj
-       moved added)
+       i ent obj c objs ys ytol rowreps
+       row0 ax ay
+       row1 row1min raw-stagger stagger staggered
+       ox oy rad lyr row p basex col nx ny
+       recs maxrow colkeys ckey pc pcol
+       start step r found nrec bestd bestr nradius nlayer
+       fx fy new-obj moved added)
 
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort"
@@ -265,6 +271,14 @@
       (princ (strcat "\n** HOLEGRID Error: " msg))
     )
     (princ)
+  )
+
+  ;;; Return the record (p col row rad lyr) at slot P/COL/ROW, or nil.
+  (defun ht:rec-at (p col row lst)
+    (vl-some
+      '(lambda (e)
+         (if (and (= (car e) p) (= (cadr e) col) (= (caddr e) row)) e))
+      lst)
   )
 
   ;;; --- VLA setup ------------------------------------------------
@@ -286,49 +300,44 @@
   (setq xsp (ht:getsp "\nX spacing, hole centre to hole centre" '*ht:last-xsp*))
   (setq ysp (ht:getsp "\nY spacing, hole centre to hole centre" '*ht:last-ysp*))
 
-  ;;; --- gather centres -------------------------------------------
-  (setq i 0  objs '())
+  ;;; --- gather (obj x y radius layer) ----------------------------
+  (setq i 0  objs '()  ys '())
   (while (< i (sslength ss))
-    (setq ent (ssname ss i)
-          obj (vlax-ename->vla-object ent)
-          c   (ht:center obj)
-          objs (cons (list obj (car c) (cadr c)) objs))
+    (setq ent  (ssname ss i)
+          obj  (vlax-ename->vla-object ent)
+          c    (ht:center obj)
+          objs (cons (list obj (car c) (cadr c)
+                           (vlax-get-property obj 'Radius)
+                           (vlax-get-property obj 'Layer))
+                     objs)
+          ys   (cons (cadr c) ys))
     (setq i (1+ i))
   )
 
-  ;;; Read radius and layer from the first hole so new circles match.
-  (setq hole-rad   (vlax-get-property (car (car objs)) 'Radius)
-        hole-layer (vlax-get-property (car (car objs)) 'Layer))
+  ;;; --- row indices by COUNTING (no accumulation) ----------------
+  ;;; Cluster Y values into rows; a new row starts at any vertical
+  ;;; gap over half the pitch.  rowreps = ordered row centroids,
+  ;;; top (index 0) to bottom.  Each hole's row = nearest centroid.
+  (setq ytol    (* ysp 0.5)
+        rowreps (ht:clusters ys t ytol))
 
-  ;;; --- find anchor: highest Y, then leftmost X -----------------
-  (setq all-sorted
-        (vl-sort objs '(lambda (a b)
-                         (if (= (caddr a) (caddr b))
-                           (< (cadr a) (cadr b))
-                           (> (caddr a) (caddr b))))))
-
-  (setq ytol (* ysp 0.45)
-        row0  (list (car all-sorted)))
-  (foreach o (cdr all-sorted)
-    (if (< (abs (- (caddr o) (caddr (car row0)))) ytol)
-      (setq row0 (cons o row0))
-    )
-  )
-  (setq row0 (vl-sort row0 '(lambda (a b) (< (cadr a) (cadr b))))
+  ;;; --- anchor: row 0, left-most hole ----------------------------
+  (setq row0 (vl-remove-if-not
+               '(lambda (o) (= 0 (ht:nearest-index (caddr o) rowreps)))
+               objs)
+        row0 (vl-sort row0 '(lambda (a b) (< (cadr a) (cadr b))))
         ax   (cadr  (car row0))
         ay   (caddr (car row0)))
 
   ;;; --- stagger detection ----------------------------------------
-  (setq row1 '()  staggered nil  stagger 0.0)
-  (foreach o all-sorted
-    (if (< (abs (- (caddr o) (- ay ysp))) ytol)
-      (setq row1 (cons o row1))
-    )
-  )
+  (setq row1 (vl-remove-if-not
+               '(lambda (o) (= 1 (ht:nearest-index (caddr o) rowreps)))
+               objs)
+        staggered nil  stagger 0.0)
   (if row1
     (progn
-      (setq row1        (vl-sort row1 '(lambda (a b) (< (cadr a) (cadr b))))
-            raw-stagger (- (cadr (car row1)) ax))
+      (setq row1min     (apply 'min (mapcar 'cadr row1))
+            raw-stagger (- row1min ax))
       (if (< (abs (- (abs raw-stagger) (* xsp 0.5))) (* xsp 0.25))
         (setq staggered t
               stagger   (if (>= raw-stagger 0.0) (* xsp 0.5) (- (* xsp 0.5))))
@@ -342,61 +351,77 @@
     (princ "\nStraight grid pattern.")
   )
 
-  ;;; --- nearest-grid-point placement ----------------------------
-  ;;; Build OCCUPIED = list of (row . col) pairs as we go,
-  ;;; so the fill pass knows which grid slots already exist.
-  (setq moved 0  occupied '()  max-row 0)
+  ;;; --- rebuild each hole from its (row,col) index ---------------
+  ;;; row  = counted cluster index (immune to drift)
+  ;;; p    = row parity used to pick the stagger offset
+  ;;; col  = round((ox - basex) / xsp)   (local per-parity origin)
+  ;;; recs = (p col row rad lyr) for every placed hole (for fill)
+  (setq moved 0  recs '()  maxrow 0)
   (foreach o objs
     (setq obj (car o)
           ox  (cadr  o)
           oy  (caddr o)
-          row (ht:round (/ (- ay oy) ysp)))
-    (if (and staggered (= (rem (abs row) 2) 1))
-      (setq col (ht:round (/ (- ox ax stagger) xsp))
-            nx  (+ ax stagger (* col xsp)))
-      (setq col (ht:round (/ (- ox ax) xsp))
-            nx  (+ ax (* col xsp)))
-    )
-    (setq ny (- ay (* row ysp)))
+          rad (cadddr o)
+          lyr (nth 4 o)
+          row (ht:nearest-index oy rowreps)
+          p   (if staggered (rem row 2) 0)
+          basex (if (= p 1) (+ ax stagger) ax)
+          col   (ht:round (/ (- ox basex) xsp))
+          nx    (+ basex (* col xsp))
+          ny    (- ay (* row ysp)))
     (vlax-put-property obj 'Center (vlax-3d-point (list nx ny 0.0)))
-    (setq occupied (cons (cons row col) occupied))
-    (if (> row max-row) (setq max-row row))
+    (setq recs (cons (list p col row rad lyr) recs))
+    (if (> row maxrow) (setq maxrow row))
     (setq moved (1+ moved))
   )
 
-  ;;; --- fill short columns --------------------------------------
-  ;;; Every column that exists (has at least one hole) must have
-  ;;; a hole in every row from 0 to MAX-ROW.  Add new circles on
-  ;;; the same layer and with the same radius wherever one is missing.
-  (setq all-cols '()  added 0)
-  (foreach pair occupied
-    (if (not (member (cdr pair) all-cols))
-      (setq all-cols (cons (cdr pair) all-cols))
+  ;;; --- fill short columns ---------------------------------------
+  ;;; Each distinct column (keyed by parity + col index) is completed
+  ;;; from its parity's first row down to MAXROW.  New circles copy
+  ;;; the radius + layer of the nearest existing hole in that column.
+  (setq colkeys '()  added 0)
+  (foreach e recs
+    (setq pc (list (car e) (cadr e)))       ; (parity col)
+    (if (not (member pc colkeys))
+      (setq colkeys (cons pc colkeys))
     )
   )
-  (foreach ci all-cols
-    (setq r 0)
-    (while (<= r max-row)
-      (if (not (member (cons r ci) occupied))
+  (foreach ckey colkeys
+    (setq p     (car  ckey)
+          pcol  (cadr ckey)
+          start (if staggered p 0)
+          step  (if staggered 2 1)
+          r     start)
+    (while (<= r maxrow)
+      (if (not (ht:rec-at p pcol r recs))
         (progn
-          (if (and staggered (= (rem (abs r) 2) 1))
-            (setq fill-x (+ ax stagger (* ci xsp)))
-            (setq fill-x (+ ax (* ci xsp)))
+          ;;; nearest existing hole in this column -> radius + layer
+          (setq bestd nil  nradius nil  nlayer nil)
+          (foreach e recs
+            (if (and (= (car e) p) (= (cadr e) pcol))
+              (progn
+                (setq bestr (abs (- (caddr e) r)))
+                (if (or (null bestd) (< bestr bestd))
+                  (setq bestd bestr  nradius (cadddr e)  nlayer (nth 4 e)))
+              )
+            )
           )
-          (setq fill-y   (- ay (* r ysp))
-                new-obj  (vla-addcircle space
-                            (vlax-3d-point (list fill-x fill-y 0.0))
-                            hole-rad))
-          (vlax-put-property new-obj 'Layer hole-layer)
+          (setq basex   (if (= p 1) (+ ax stagger) ax)
+                fx      (+ basex (* pcol xsp))
+                fy      (- ay (* r ysp))
+                new-obj (vla-addcircle space
+                          (vlax-3d-point (list fx fy 0.0))
+                          nradius))
+          (vlax-put-property new-obj 'Layer nlayer)
           (setq added (1+ added))
         )
       )
-      (setq r (1+ r))
+      (setq r (+ r step))
     )
   )
 
-  (princ (strcat "\nDone - " (itoa moved) " hole(s) snapped to grid, "
-                 (itoa added) " hole(s) added to fill short columns  ("
+  (princ (strcat "\nDone - " (itoa moved) " hole(s) rebuilt on grid, "
+                 (itoa added) " added to fill short columns  ("
                  (ht:fmtinch xsp) " x " (ht:fmtinch ysp) " spacing"
                  (if staggered ", staggered)." ").")))
   (princ)
