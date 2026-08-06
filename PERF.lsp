@@ -5,13 +5,15 @@
 ;;;
 ;;; Workflow:
 ;;;   1. Choose a hole SHAPE  : Circle, Square, Rectangle,
-;;;                             Hexagon, Diamond
-;;;   2. Choose the SIZE      : one value (Rectangle asks two)
+;;;                             Hexagon, Diamond, Slot
+;;;   2. Choose the SIZE      : one value (Rectangle/Slot ask two)
 ;;;                             - Circle   = diameter
 ;;;                             - Square   = side length
 ;;;                             - Rectangle= length x width
 ;;;                             - Hexagon  = across flats
 ;;;                             - Diamond  = point-to-point width
+;;;                             - Slot     = overall length x width
+;;;                                          (obround, round end caps)
 ;;;   3. Choose the SPACING   : center-to-center distance
 ;;;   4. Choose the ANGLE     : Straight, 30, 45 or 60 degrees
 ;;;   All values are in inches.
@@ -156,6 +158,23 @@
        (setq pts (cons (list (* r (cos ang)) (* r (sin ang))) pts))
        (setq k (1+ k)))
      (reverse pts))
+    ((= shape "Slot")
+     ;; Obround: size = overall length, size2 = width.  Sampled
+     ;; outline (cap arcs in 30-deg steps) for the clip tests; the
+     ;; drawn entity uses true arc segments instead of these points.
+     (setq hd (- (* 0.5 size) (* 0.5 size2))  ; cap center offset
+           r  (* 0.5 size2)
+           pts '() k -3)
+     (while (<= k 3)                          ; right cap -90..+90
+       (setq ang (* k (/ pi 6.0)))
+       (setq pts (cons (list (+ hd (* r (cos ang))) (* r (sin ang))) pts))
+       (setq k (1+ k)))
+     (setq k 3)
+     (while (<= k 9)                          ; left cap +90..+270
+       (setq ang (* k (/ pi 6.0)))
+       (setq pts (cons (list (+ (- hd) (* r (cos ang))) (* r (sin ang))) pts))
+       (setq k (1+ k)))
+     (reverse pts))
   )
 )
 
@@ -166,6 +185,7 @@
     ((= shape "Rectangle") (* 0.5 (sqrt (+ (* size size) (* size2 size2)))))
     ((= shape "Diamond")   (* 0.5 size))
     ((= shape "Hexagon")   (/ size (sqrt 3.0)))
+    ((= shape "Slot")      (* 0.5 size))
     (T (* 0.5 size))
   )
 )
@@ -192,10 +212,25 @@
         (+ cy (+ (* lx sa) (* ly ca))))
 )
 
-(defun pf:drawhole (shape size size2 cx cy rowang lverts / ca sa verts pr lst)
-  (if (= shape "Circle")
-    (entmake (list '(0 . "CIRCLE") (list 10 cx cy 0.0) (cons 40 (* 0.5 size))))
-    (progn
+(defun pf:drawhole (shape size size2 cx cy rowang lverts / ca sa verts pr lst
+                    a w2)
+  (cond
+    ((= shape "Circle")
+     (entmake (list '(0 . "CIRCLE") (list 10 cx cy 0.0) (cons 40 (* 0.5 size)))))
+    ((= shape "Slot")
+     ;; Obround drawn with true semicircular end caps (bulge = 1).
+     (setq a  (- (* 0.5 size) (* 0.5 size2))
+           w2 (* 0.5 size2)
+           ca (cos rowang) sa (sin rowang))
+     (entmake
+       (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") '(100 . "AcDbPolyline")
+             '(90 . 4) '(70 . 1)
+             (cons 10 (pf:xform (- a) (- w2) cx cy ca sa)) '(42 . 0.0)
+             (cons 10 (pf:xform a     (- w2) cx cy ca sa)) '(42 . 1.0)
+             (cons 10 (pf:xform a     w2     cx cy ca sa)) '(42 . 0.0)
+             (cons 10 (pf:xform (- a) w2     cx cy ca sa)) '(42 . 1.0))))
+    (T
+     (progn
       (setq ca (cos rowang) sa (sin rowang) verts '())
       (foreach p lverts
         (setq verts (cons (pf:xform (car p) (cadr p) cx cy ca sa) verts)))
@@ -204,6 +239,7 @@
                       '(100 . "AcDbPolyline") (cons 90 (length verts)) '(70 . 1)))
       (foreach p verts (setq lst (append lst (list (cons 10 p)))))
       (entmake lst))
+    )
   )
 )
 
@@ -238,23 +274,28 @@
 )
 
 (defun pf:setup ( / tmp)
-  (initget "Circle Square Rectangle Hexagon Diamond")
+  (initget "Circle Square Rectangle Hexagon Diamond SLot")
   (setq tmp (getkword
-              (strcat "\nHole shape [Circle/Square/Rectangle/Hexagon/Diamond] <"
+              (strcat "\nHole shape [Circle/Square/Rectangle/Hexagon/Diamond/SLot] <"
                       (cond (*perf-shape*) ("Circle")) ">: ")))
+  (if (= tmp "SLot") (setq tmp "Slot"))
   (if tmp (setq *perf-shape* tmp)
           (if (null *perf-shape*) (setq *perf-shape* "Circle")))
 
   (cond
-    ((= *perf-shape* "Rectangle")
+    ((member *perf-shape* '("Rectangle" "Slot"))
      (initget 6)
-     (setq tmp (getdist (strcat "\nHole length (in) <"
+     (setq tmp (getdist (strcat "\n" *perf-shape* " overall length (in) <"
                                 (rtos (cond (*perf-size*) (1.0)) 2 4) ">: ")))
      (if tmp (setq *perf-size* tmp) (if (null *perf-size*) (setq *perf-size* 1.0)))
      (initget 6)
-     (setq tmp (getdist (strcat "\nHole width (in) <"
+     (setq tmp (getdist (strcat "\n" *perf-shape* " width (in) <"
                                 (rtos (cond (*perf-size2*) (0.5)) 2 4) ">: ")))
-     (if tmp (setq *perf-size2* tmp) (if (null *perf-size2*) (setq *perf-size2* 0.5))))
+     (if tmp (setq *perf-size2* tmp) (if (null *perf-size2*) (setq *perf-size2* 0.5)))
+     (if (and (= *perf-shape* "Slot") (<= *perf-size* *perf-size2*))
+       (progn
+         (princ "\nSlot length must exceed its width - using width x 2.")
+         (setq *perf-size* (* 2.0 *perf-size2*)))))
     (T
      (initget 6)
      (setq tmp (getdist (strcat (pf:sizeprompt *perf-shape*)
@@ -505,7 +546,7 @@
     (progn
       (princ (strcat "\nCurrent pattern: " *perf-shape*
                      "  size=" (rtos *perf-size* 2 4)
-                     (if (= *perf-shape* "Rectangle")
+                     (if (member *perf-shape* '("Rectangle" "Slot"))
                        (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
                      "  spacing=" (rtos *perf-spacing* 2 4)
                      "  angle=" *perf-angle*))
