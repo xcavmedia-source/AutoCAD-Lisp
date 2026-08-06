@@ -59,6 +59,7 @@
       (if (setq g (getcfg (strcat *perf-cfgroot* "Spacing"))) (setq *perf-spacing* (atof g)))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Angle")))   (setq *perf-angle*   g))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Method")))  (setq *perf-method*  g))
+      (if (setq g (getcfg (strcat *perf-cfgroot* "Thick")))   (setq *perf-thick*   (atof g)))
     )
   )
   (princ)
@@ -71,6 +72,7 @@
   (setcfg (strcat *perf-cfgroot* "Spacing") (rtos *perf-spacing* 2 8))
   (setcfg (strcat *perf-cfgroot* "Angle")   *perf-angle*)
   (setcfg (strcat *perf-cfgroot* "Method")  (cond (*perf-method*) ("Select")))
+  (setcfg (strcat *perf-cfgroot* "Thick")   (rtos (cond (*perf-thick*) (0.0)) 2 8))
   (princ)
 )
 
@@ -261,6 +263,156 @@
   )
 )
 
+;;; ---- minimum web (bar) checking ---------------------------------
+;;; The web is the clear edge-to-edge material left between adjacent
+;;; holes.  Industry practice is that it must be at least as thick as
+;;; the material, or the sheet tears / distorts when punched.
+;;;
+;;; Two holes of a centrally symmetric shape K whose centers differ by
+;;; D are separated by exactly the distance from the point D to the
+;;; shape scaled 2x.  That identity gives the true clear gap for any
+;;; shape and any lattice angle, so one routine covers 30/45/60 and
+;;; straight alike.
+
+;;; Distance from point P to convex polygon VERTS (0.0 when inside).
+(defun pf:polygap (p verts / n i a b d best)
+  (if (pf:ptinpoly p verts)
+    0.0
+    (progn
+      (setq n (length verts) best 1e30 i 0)
+      (while (< i n)
+        (setq a (nth i verts) b (nth (rem (1+ i) n) verts)
+              d (pf:segdist p a b))
+        (if (< d best) (setq best d))
+        (setq i (1+ i)))
+      best)
+  )
+)
+
+;;; Clear gap between two holes whose centers differ by P, with P
+;;; expressed in the hole's own (unrotated) frame.  VERTS2 is the
+;;; local outline scaled 2x (unused for circles and slots, which are
+;;; handled exactly).
+(defun pf:pairgap (shape size size2 p verts2 / a r)
+  (cond
+    ((= shape "Circle")
+     (- (distance p '(0.0 0.0)) size))
+    ((= shape "Slot")
+     ;; 2x obround: cap centers at +/-2a, radius 2r
+     (setq a (- (* 0.5 size) (* 0.5 size2))
+           r (* 0.5 size2))
+     (- (pf:segdist p (list (* -2.0 a) 0.0) (list (* 2.0 a) 0.0))
+        (* 2.0 r)))
+    (T (pf:polygap p verts2))
+  )
+)
+
+;;; Smallest clear web across all neighboring holes in the lattice.
+;;; Checks every lattice combination within +/-2 steps, which always
+;;; contains the closest neighbors.  Because the holes and the lattice
+;;; rotate together, working in the hole's local frame makes this
+;;; independent of any edge-follow rotation.
+(defun pf:minweb (shape size size2 spacing angle
+                  / lat ux uy vx vy ra ca sa lv v2 i j dx dy lx ly g best)
+  (setq lat (pf:lattice angle spacing)
+        ux (nth 0 lat) uy (nth 1 lat)
+        vx (nth 2 lat) vy (nth 3 lat)
+        ra (nth 4 lat) ca (cos ra) sa (sin ra)
+        lv (pf:localverts shape size size2)
+        v2 '())
+  (if lv
+    (foreach p lv
+      (setq v2 (cons (list (* 2.0 (car p)) (* 2.0 (cadr p))) v2))))
+  (setq v2 (reverse v2))
+  (setq best 1e30 i -2)
+  (while (<= i 2)
+    (setq j -2)
+    (while (<= j 2)
+      (if (not (and (= i 0) (= j 0)))
+        (progn
+          (setq dx (+ (* i ux) (* j vx))
+                dy (+ (* i uy) (* j vy))
+                lx (+ (* dx ca) (* dy sa))     ; rotate by -rowangle
+                ly (- (* dy ca) (* dx sa))
+                g  (pf:pairgap shape size size2 (list lx ly) v2))
+          (if (< g best) (setq best g))))
+      (setq j (1+ j)))
+    (setq i (1+ i)))
+  best
+)
+
+;;; Smallest center-to-center spacing whose web meets THICK.
+;;; The web grows monotonically with spacing, so a bisection is exact;
+;;; the result is rounded UP to 4 decimals so it truly satisfies.
+(defun pf:minspacing (shape size size2 angle thick / s2 lo hi mid k)
+  (setq s2 (cond (size2) (0.0))
+        lo 1e-6
+        hi (max 1e-3 (+ size s2 thick))
+        k  0)
+  (while (and (< (pf:minweb shape size s2 hi angle) thick) (< k 60))
+    (setq hi (* hi 2.0) k (1+ k)))
+  (setq k 0)
+  (while (< k 40)
+    (setq mid (* 0.5 (+ lo hi)))
+    (if (< (pf:minweb shape size s2 mid angle) thick)
+      (setq lo mid)
+      (setq hi mid))
+    (setq k (1+ k)))
+  (/ (float (fix (+ (* hi 10000.0) 0.9999))) 10000.0)
+)
+
+;;; Verify the current spacing against the stored material thickness.
+;;; Loops until the pattern passes or the user overrides.
+(defun pf:checkweb ( / web minc ans tmp done)
+  (if (and *perf-thick* (> *perf-thick* 0.0) (pf:havecfg))
+    (progn
+      (setq done nil)
+      (while (not done)
+        (setq web (pf:minweb *perf-shape* *perf-size*
+                             (cond (*perf-size2*) (0.0))
+                             *perf-spacing* *perf-angle*))
+        (if (< web (- *perf-thick* 1e-9))
+          (progn
+            (setq minc (pf:minspacing *perf-shape* *perf-size* *perf-size2*
+                                      *perf-angle* *perf-thick*))
+            (princ "\n\n*** MINIMUM BAR WARNING ***")
+            (princ "\nThe web (bar) is the clear material left between holes.  It")
+            (princ "\nshould be at least the material thickness or the sheet tears")
+            (princ "\nand distorts when punched.")
+            (princ (strcat "\n  Material thickness : " (rtos *perf-thick* 2 4) "\""))
+            (princ (strcat "\n  Spacing " (rtos *perf-spacing* 2 4)
+                           "\" at " *perf-angle*
+                           " gives a bar of only " (rtos web 2 4) "\""))
+            (princ (strcat "\n  Minimum center-to-center for this pattern: "
+                           (rtos minc 2 4) "\""))
+            (princ (strcat "\n  [Minimum]  = use " (rtos minc 2 4) "\""))
+            (princ "\n  [New]      = type a different center-to-center")
+            (princ "\n  [Override] = keep the current spacing anyway")
+            (initget "Minimum New Override")
+            (setq ans (getkword "\nChoose [Minimum/New/Override] <Minimum>: "))
+            (cond
+              ((= ans "Override")
+               (princ "\nContinuing below minimum bar (override).")
+               (setq done T))
+              ((= ans "New")
+               (initget 6)
+               (setq tmp (getdist (strcat "\nNew spacing center-to-center (in) <"
+                                          (rtos minc 2 4) ">: ")))
+               (setq *perf-spacing* (cond (tmp) (minc))))
+              (T
+               (setq *perf-spacing* minc)
+               (princ (strcat "\nSpacing set to " (rtos minc 2 4) "\"."))
+               (setq done T)))
+            (pf:savecfg))
+          (progn
+            (princ (strcat "\nBar check OK - clear web is " (rtos web 2 4)
+                           "\" (material " (rtos *perf-thick* 2 4) "\")."))
+            (setq done T))))
+    )
+  )
+  (princ)
+)
+
 ;;; ---- interactive pattern setup ----------------------------------
 
 ;;; Prompt text for the single-value shapes.
@@ -323,6 +475,11 @@
   )
 
   (initget 6)
+  (setq tmp (getdist (strcat "\nMaterial thickness (in) <"
+                             (rtos (cond (*perf-thick*) (0.0625)) 2 4) ">: ")))
+  (if tmp (setq *perf-thick* tmp) (if (null *perf-thick*) (setq *perf-thick* 0.0625)))
+
+  (initget 6)
   (setq tmp (getdist (strcat "\nSpacing center-to-center (in) <"
                              (rtos (cond (*perf-spacing*) (1.0)) 2 4) ">: ")))
   (if tmp (setq *perf-spacing* tmp) (if (null *perf-spacing*) (setq *perf-spacing* 1.0)))
@@ -333,6 +490,8 @@
   (if tmp (setq *perf-angle* tmp) (if (null *perf-angle*) (setq *perf-angle* "60")))
 
   (pf:savecfg)
+  ;; angle affects which neighbors are closest, so check once it is known
+  (pf:checkweb)
   (princ)
 )
 
@@ -568,13 +727,18 @@
                      (if (member *perf-shape* '("Rectangle" "Slot"))
                        (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
                      "  spacing=" (rtos *perf-spacing* 2 4)
-                     "  angle=" *perf-angle*))
+                     "  angle=" *perf-angle*
+                     (if (and *perf-thick* (> *perf-thick* 0.0))
+                       (strcat "  material=" (rtos *perf-thick* 2 4)) "")))
       (initget "Continue Redefine")
       (setq ans (getkword "\nUse this pattern? [Continue/Redefine] <Continue>: "))
       (if (or (null ans) (= ans "Continue")) (setq needsetup nil))
     )
   )
-  (if needsetup (pf:setup))
+  (if needsetup
+    (pf:setup)
+    ;; reused pattern still gets verified against the stored thickness
+    (pf:checkweb))
 
   ;; --- get the fill boundary --------------------------------------
   (setq bres (pf:getboundary))
