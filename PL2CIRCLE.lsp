@@ -18,6 +18,15 @@
 ;;; Anything else - rectangles, slots, lens shapes, part circles,
 ;;; open polylines - is left untouched.
 ;;;
+;;; Before anything is drawn a dialog lists every size that is about
+;;; to be created - existing diameter on the left, how many of them,
+;;; and a column for a replacement diameter on the right.  Pick a row,
+;;; type the diameter you would rather have, press Set, and those
+;;; circles are created at the new size on the same centres.  Leave
+;;; the right hand column empty and the size is kept as it is, so
+;;; pressing OK straight away converts everything unchanged.  Cancel
+;;; abandons the run and touches nothing.
+;;;
 ;;; Each new CIRCLE keeps the polyline's layer, colour, linetype,
 ;;; linetype scale, lineweight, transparency, thickness, elevation
 ;;; and extrusion direction.  Polyline width cannot be carried over
@@ -52,6 +61,16 @@
 ;;; Points closer together than this count as the same point.
 (if (not *P2C-FUZZ*) (setq *P2C-FUZZ* 1.0e-10))
 
+;;; Diameters within this of each other are listed as one size in the
+;;; review dialog.  Widen it to fold near-identical sizes together.
+(if (not *P2C-GROUP-TOL*) (setq *P2C-GROUP-TOL* 1.0e-6))
+
+;;; The size review dialog is shown by default.  (setq *P2C-NOASK* T)
+;;; suppresses it for batch runs that convert everything at its
+;;; existing size.  Phrased as an opt-out because AutoLISP cannot tell
+;;; a symbol set to nil from one that was never set at all.
+(if (not *P2C-NOASK*) (setq *P2C-NOASK* nil))
+
 
 ;;; ---- small helpers ---------------------------------------------
 
@@ -69,6 +88,59 @@
 (defun p2c:locked (lname / rec)
   (and (setq rec (tblsearch "LAYER" lname))
        (= 4 (logand 4 (cdr (assoc 70 rec))))
+  )
+)
+
+;;; Replace item IDX of LST with VAL (lists are rebuilt, not mutated)
+(defun p2c:setnth (lst idx val / i res)
+  (setq i 0 res '())
+  (foreach x lst
+    (setq res (cons (if (= i idx) val x) res)
+          i   (1+ i)))
+  (reverse res)
+)
+
+;;; Pad S out to width W, on the right / on the left
+(defun p2c:rpad (s w)
+  (while (< (strlen s) w) (setq s (strcat s " ")))
+  s
+)
+(defun p2c:lpad (s w)
+  (while (< (strlen s) w) (setq s (strcat " " s)))
+  s
+)
+
+;;; A size as text: decimal, up to 4 places, trailing zeros dropped
+;;; so 0.5000 reads as 0.5 and 12.0000 as 12.
+(defun p2c:fmt (val / s)
+  (setq s (rtos val 2 4))
+  (if (vl-string-search "." s)
+    (progn
+      (while (= "0" (substr s (strlen s) 1))
+        (setq s (substr s 1 (1- (strlen s)))))
+      (if (= "." (substr s (strlen s) 1))
+        (setq s (substr s 1 (1- (strlen s)))))))
+  s
+)
+
+;;; distof without the risk of a malformed string throwing
+(defun p2c:tryparse (s mode / r)
+  (setq r (vl-catch-all-apply 'distof (list s mode)))
+  (if (or (vl-catch-all-error-p r) (not (numberp r))) nil r)
+)
+
+;;; Read a typed diameter.  Plain decimal is tried first, then the
+;;; drawing's own unit format, so 1.5 and 1-1/2 both work on an
+;;; architectural drawing.  Returns nil unless the result is > 0.
+(defun p2c:posreal (s / d)
+  (setq s (vl-string-trim " \t" s))
+  (if (= s "")
+    nil
+    (progn
+      (setq d (p2c:tryparse s 2))
+      (if (null d) (setq d (p2c:tryparse s (getvar "LUNITS"))))
+      (if (and d (> d 0.0)) d)
+    )
   )
 )
 
@@ -322,9 +394,11 @@
             (cons 210 nrm))))
 )
 
-;;; Convert one polyline.  Returns a status symbol:
-;;;   converted / notclosed / notcircle / unsupported / locked / failed
-(defun p2c:convert (ent / ed g verts elev nrm closed fit)
+;;; Examine one polyline without touching the drawing.  Returns a job
+;;; list (ent centre radius elevation normal entity-data) when it is a
+;;; circle, otherwise a status symbol:
+;;;   notclosed / notcircle / unsupported / locked
+(defun p2c:analyze (ent / ed g verts elev nrm closed fit)
   (setq ed (entget ent)
         g  (p2c:geom ent))
   (cond
@@ -349,20 +423,269 @@
      (cond
        ((not closed) 'notclosed)
        ((null (setq fit (p2c:fitcircle verts))) 'notcircle)
-       ((null (p2c:mkcircle (car fit) (cadr fit) elev nrm ed)) 'failed)
-       (T (entdel ent) 'converted)
+       (T (list ent (car fit) (cadr fit) elev nrm ed))
      )
     )
   )
 )
 
 
+;;; ---- size review -----------------------------------------------
+
+;;; Index of the group holding diameter DIA, or nil
+(defun p2c:groupindex (dia groups / i n found)
+  (setq i 0 n (length groups) found nil)
+  (while (and (< i n) (not found))
+    (if (<= (abs (- dia (car (nth i groups)))) *P2C-GROUP-TOL*)
+      (setq found i))
+    (setq i (1+ i)))
+  found
+)
+
+;;; Collapse the jobs into distinct sizes: ((diameter count) ...),
+;;; smallest first
+(defun p2c:group (jobs / groups dia idx)
+  (setq groups '())
+  (foreach j jobs
+    (setq dia (* 2.0 (caddr j))
+          idx (p2c:groupindex dia groups))
+    (if idx
+      (setq groups (p2c:setnth groups idx
+                               (list (car  (nth idx groups))
+                                     (1+ (cadr (nth idx groups))))))
+      (setq groups (append groups (list (list dia 1))))
+    )
+  )
+  ;;; every diameter here is distinct by construction, so vl-sort's
+  ;;; habit of dropping equal elements cannot bite
+  (vl-sort groups '(lambda (a b) (< (car a) (car b))))
+)
+
+
+;;; The dialog is described in DCL, which has to live in a file.
+;;; Writing it to a temp file at run time keeps the tool a single
+;;; .lsp to hand round - nothing to copy onto the support path.
+(defun p2c:writedcl (/ path f)
+  (if (and (setq path (vl-filename-mktemp "p2csize.dcl"))
+           (setq f (open path "w")))
+    (progn
+      (foreach ln
+        (list
+          "p2csize : dialog {"
+          "  label = \"Polyline to Circle  -  Sizes\";"
+          "  : row {"
+          "    : boxed_column {"
+          "      label = \"Circles to create   ( qty   x   existing   ->   new )\";"
+          "      : list_box {"
+          "        key = \"sizes\";"
+          "        width = 46;"
+          "        height = 14;"
+          "        fixed_width_font = true;"
+          "      }"
+          "    }"
+          "    : boxed_column {"
+          "      label = \"Change a size\";"
+          "      : edit_box {"
+          "        key = \"newdia\";"
+          "        label = \"New diameter:\";"
+          "        edit_width = 12;"
+          "      }"
+          "      : button { key = \"apply\";     label = \"&Set\"; }"
+          "      : spacer { height = 0.5; }"
+          "      : button { key = \"revert\";    label = \"&Revert row\"; }"
+          "      : button { key = \"revertall\"; label = \"Revert &all\"; }"
+          "      : spacer { height = 0.5; }"
+          "      : text { key = \"info\"; label = \"\"; width = 22; }"
+          "    }"
+          "  }"
+          "  : text { key = \"total\"; label = \"\"; width = 62; }"
+          "  spacer;"
+          "  ok_cancel;"
+          "}"
+        )
+        (write-line ln f))
+      (close f)
+      path
+    )
+  )
+)
+
+;;; One list row: qty, existing diameter, and the replacement when
+;;; one has been typed in.  The list box uses a fixed width font, so
+;;; padding lines the columns up.
+(defun p2c:dlg-line (i / g nd)
+  (setq g  (nth i p2c-groups)
+        nd (nth i p2c-new))
+  (strcat (p2c:lpad (itoa (cadr g)) 5) "  x    "
+          (p2c:rpad (p2c:fmt (car g)) 12)
+          (if nd (strcat "->   " (p2c:fmt nd)) "")
+  )
+)
+
+(defun p2c:dlg-refresh (/ i n)
+  (start_list "sizes")
+  (setq i 0 n (length p2c-groups))
+  (while (< i n)
+    (add_list (p2c:dlg-line i))
+    (setq i (1+ i)))
+  (end_list)
+  (if p2c-sel (set_tile "sizes" (itoa p2c-sel)))
+)
+
+;;; Row clicked - show whatever replacement it already carries
+(defun p2c:dlg-select (val / nd)
+  (setq p2c-sel (atoi val)
+        nd      (nth p2c-sel p2c-new))
+  (set_tile "newdia" (if nd (p2c:fmt nd) ""))
+  (set_tile "info" "")
+)
+
+;;; Take what is in the edit box and attach it to the selected row.
+;;; An empty box means "leave this size alone".  Returns T when the
+;;; dialog is in a state fit to close.
+(defun p2c:dlg-apply (/ s d)
+  (setq s (vl-string-trim " \t" (get_tile "newdia")))
+  (cond
+    ((null p2c-sel)
+     (if (= s "")
+       T
+       (progn (set_tile "info" "Pick a size first.") nil)))
+    ((= s "")
+     (setq p2c-new (p2c:setnth p2c-new p2c-sel nil))
+     (set_tile "info" "")
+     (p2c:dlg-refresh)
+     T)
+    ((setq d (p2c:posreal s))
+     (setq p2c-new (p2c:setnth p2c-new p2c-sel d))
+     (set_tile "info" "")
+     (p2c:dlg-refresh)
+     T)
+    (T (set_tile "info" "Not a valid diameter.") nil)
+  )
+)
+
+(defun p2c:dlg-revert ()
+  (if p2c-sel
+    (progn
+      (setq p2c-new (p2c:setnth p2c-new p2c-sel nil))
+      (set_tile "newdia" "")
+      (set_tile "info" "")
+      (p2c:dlg-refresh)))
+)
+
+(defun p2c:dlg-revertall ()
+  (setq p2c-new (mapcar '(lambda (x) nil) p2c-groups))
+  (set_tile "newdia" "")
+  (set_tile "info" "")
+  (p2c:dlg-refresh)
+)
+
+;;; OK - only close once any half typed value is dealt with, so a
+;;; typo cannot be swallowed on the way out
+(defun p2c:dlg-ok ()
+  (if (p2c:dlg-apply) (done_dialog 1))
+)
+
+;;; Show the review dialog.  Returns a list parallel to GROUPS holding
+;;; the replacement diameter for each size (nil = keep as is), or the
+;;; symbol cancel.
+(defun p2c:sizedialog (groups / p2c-groups p2c-new p2c-sel
+                              path id res total)
+  (setq p2c-groups groups
+        p2c-new    (mapcar '(lambda (x) nil) groups)
+        p2c-sel    0
+        total      0)
+  (foreach g groups (setq total (+ total (cadr g))))
+
+  (cond
+    ((null (setq path (p2c:writedcl))) 'nodialog)
+    ((progn (setq id (load_dialog path)) (or (null id) (<= id 0)))
+     (vl-file-delete path)
+     'nodialog)
+    ((not (new_dialog "p2csize" id))
+     (unload_dialog id)
+     (vl-file-delete path)
+     'nodialog)
+    (T
+     (set_tile "total"
+               (strcat "  " (itoa total) " polyline"
+                       (if (= total 1) "" "s") " in "
+                       (itoa (length groups)) " size"
+                       (if (= 1 (length groups)) "" "s")
+                       ".  Leave the right hand column empty to keep a size."))
+     (p2c:dlg-refresh)
+     (set_tile "info" "")
+     (action_tile "sizes"     "(p2c:dlg-select $value)")
+     (action_tile "newdia"    "(p2c:dlg-apply)")
+     (action_tile "apply"     "(p2c:dlg-apply)")
+     (action_tile "revert"    "(p2c:dlg-revert)")
+     (action_tile "revertall" "(p2c:dlg-revertall)")
+     (action_tile "accept"    "(p2c:dlg-ok)")
+     (action_tile "cancel"    "(done_dialog 0)")
+     (mode_tile "newdia" 2)
+     (setq res (start_dialog))
+     (unload_dialog id)
+     (vl-file-delete path)
+     (if (= res 1) p2c-new 'cancel)
+    )
+  )
+)
+
+;;; Same job at the command line, for when the dialog cannot be shown
+(defun p2c:sizeprompt (groups / res n i ans d)
+  (setq res (mapcar '(lambda (x) nil) groups)
+        n   (length groups)
+        i   0)
+  (princ "\n\nCircles to create:")
+  (while (< i n)
+    (princ (strcat "\n  " (p2c:lpad (itoa (1+ i)) 3) ".  "
+                   (p2c:lpad (itoa (cadr (nth i groups))) 5) " x   dia "
+                   (p2c:fmt (car (nth i groups)))))
+    (setq i (1+ i)))
+  (setq ans T)
+  (while ans
+    (initget 6)
+    (setq ans (getint (strcat "\nSize number to change, 1-" (itoa n)
+                              " <ENTER = convert as listed>: ")))
+    (cond
+      ((null ans))
+      ((> ans n) (princ "\n  No such size."))
+      (T
+       (initget 6)
+       (setq d (getdist (strcat "\n  New diameter for "
+                                (p2c:fmt (car (nth (1- ans) groups)))
+                                " <ENTER = leave as is>: ")))
+       (setq res (p2c:setnth res (1- ans) d)))
+    )
+  )
+  res
+)
+
+
 ;;; ---- main command ----------------------------------------------
+
+;;; The "why was this left alone" half of the summary, shared by the
+;;; nothing-to-do exit and the end of a normal run
+(defun p2c:skipreport (n-open n-noncirc n-unsup n-lock n-fail)
+  (if (> n-noncirc 0)
+    (princ (strcat "\n  " (itoa n-noncirc) " skipped - not circular.")))
+  (if (> n-open 0)
+    (princ (strcat "\n  " (itoa n-open) " skipped - not closed.")))
+  (if (> n-unsup 0)
+    (princ (strcat "\n  " (itoa n-unsup)
+                   " skipped - 3D / mesh / fitted polyline.")))
+  (if (> n-lock 0)
+    (princ (strcat "\n  " (itoa n-lock) " skipped - locked layer.")))
+  (if (> n-fail 0)
+    (princ (strcat "\n  " (itoa n-fail) " failed - circle not created.")))
+  (princ)
+)
 
 (defun c:PL2CIRCLE
     (/ *error*
        doc ss i ent ed res newss
-       n-conv n-open n-noncirc n-unsup n-lock n-fail n-width)
+       jobs job groups newdias gidx nd cen rad elev nrm
+       n-conv n-open n-noncirc n-unsup n-lock n-fail n-width n-resize)
 
   ;;; Local error handler - close the undo mark whatever happens, so
   ;;; the drawing is never left mid-transaction
@@ -402,9 +725,7 @@
     )
   )
 
-  ;;; --- convert --------------------------------------------------
-  (vla-startundomark doc)
-
+  ;;; --- phase 1: work out what is a circle, changing nothing ------
   (setq n-conv    0
         n-open    0
         n-noncirc 0
@@ -412,25 +733,76 @@
         n-lock    0
         n-fail    0
         n-width   0
-        newss     (ssadd)
+        n-resize  0
+        jobs      '()
         i         0)
 
   (while (< i (sslength ss))
     (setq ent (ssname ss i)
-          ed  (entget ent)
-          res (p2c:convert ent))
+          res (p2c:analyze ent))
     (cond
-      ((eq res 'converted)
-       (setq n-conv (1+ n-conv))
-       (ssadd (entlast) newss)
-       (if (p2c:haswidth ed) (setq n-width (1+ n-width))))
+      ;;; a job is a list, a refusal is a symbol - and (listp nil) is
+      ;;; true in AutoLISP, so test for the list explicitly
+      ((and res (listp res)) (setq jobs (cons res jobs)))
       ((eq res 'notclosed)   (setq n-open    (1+ n-open)))
       ((eq res 'notcircle)   (setq n-noncirc (1+ n-noncirc)))
       ((eq res 'unsupported) (setq n-unsup   (1+ n-unsup)))
       ((eq res 'locked)      (setq n-lock    (1+ n-lock)))
-      ((eq res 'failed)      (setq n-fail    (1+ n-fail)))
     )
     (setq i (1+ i))
+  )
+  (setq jobs (reverse jobs))
+
+  (if (null jobs)
+    (progn
+      (princ "\nNo circular polylines found in the selection.")
+      (p2c:skipreport n-open n-noncirc n-unsup n-lock n-fail)
+      (exit)
+    )
+  )
+
+  ;;; --- phase 2: let the user review and retarget the sizes -------
+  (setq groups  (p2c:group jobs)
+        newdias (if *P2C-NOASK*
+                  (mapcar '(lambda (x) nil) groups)
+                  (p2c:sizedialog groups)))
+
+  ;;; no DCL available - fall back to the command line
+  (if (eq newdias 'nodialog)
+    (progn
+      (princ "\nDialog unavailable - using the command line instead.")
+      (setq newdias (p2c:sizeprompt groups))))
+
+  (if (eq newdias 'cancel)
+    (progn
+      (princ "\nCancelled - nothing was changed.")
+      (exit)
+    )
+  )
+
+  ;;; --- phase 3: build the circles, drop the polylines ------------
+  (vla-startundomark doc)
+  (setq newss (ssadd))
+
+  (foreach job jobs
+    (setq ent  (nth 0 job)
+          cen  (nth 1 job)
+          rad  (nth 2 job)
+          elev (nth 3 job)
+          nrm  (nth 4 job)
+          ed   (nth 5 job)
+          gidx (p2c:groupindex (* 2.0 rad) groups)
+          nd   (if gidx (nth gidx newdias)))
+    (if nd (setq rad (/ nd 2.0)))
+    (if (p2c:mkcircle cen rad elev nrm ed)
+      (progn
+        (entdel ent)
+        (setq n-conv (1+ n-conv))
+        (ssadd (entlast) newss)
+        (if nd (setq n-resize (1+ n-resize)))
+        (if (p2c:haswidth ed) (setq n-width (1+ n-width))))
+      (setq n-fail (1+ n-fail))
+    )
   )
 
   (vla-endundomark doc)
@@ -438,17 +810,9 @@
   ;;; --- report ---------------------------------------------------
   (princ (strcat "\nConverted " (itoa n-conv) " polyline"
                  (if (= n-conv 1) "" "s") " to circles."))
-  (if (> n-noncirc 0)
-    (princ (strcat "\n  " (itoa n-noncirc) " skipped - not circular.")))
-  (if (> n-open 0)
-    (princ (strcat "\n  " (itoa n-open) " skipped - not closed.")))
-  (if (> n-unsup 0)
-    (princ (strcat "\n  " (itoa n-unsup)
-                   " skipped - 3D / mesh / fitted polyline.")))
-  (if (> n-lock 0)
-    (princ (strcat "\n  " (itoa n-lock) " skipped - locked layer.")))
-  (if (> n-fail 0)
-    (princ (strcat "\n  " (itoa n-fail) " failed - circle not created.")))
+  (if (> n-resize 0)
+    (princ (strcat "\n  " (itoa n-resize) " created at a new size.")))
+  (p2c:skipreport n-open n-noncirc n-unsup n-lock n-fail)
   (if (> n-width 0)
     (princ (strcat "\n  Note: " (itoa n-width)
                    " had a polyline width, which a circle cannot keep.")))
