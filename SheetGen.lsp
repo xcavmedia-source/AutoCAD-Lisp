@@ -150,11 +150,19 @@
 ;;                     how sheets that were already finished got moved                                                            ;;
 ;;                   - Each sheet prints the centre it is aimed at                                                                ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.12: Renaming moved to the end of the run                                                                         ;;
+;;                   - Sheets are created and positioned under a plain temporary name, and the real                               ;;
+;;                     names are applied once nothing else depends on them. The copy chain has to make                            ;;
+;;                     each layout current, and a sheet name carries padding spaces that do not always                            ;;
+;;                     survive a round trip through CTAB and the LAYOUT command                                                   ;;
+;;                   - A failed rename now reports the reason AutoCAD gave, instead of a bare message                             ;;
+;;                   - The name AutoCAD actually stored is read back, and a name it altered is reported                           ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.11")
+(setq sheetgenversion "1.12")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -361,15 +369,26 @@
   nm
 )
 
-;;; Rename through ActiveX - the LAYOUT command would eat the spaces in a padded name.
-(defun sg:Rename (old new / r)
+;;; Rename through ActiveX - the LAYOUT command would eat the spaces in a padded
+;;; name.  Returns the name AutoCAD actually stored, which is not always the one
+;;; asked for, or nil on failure with the reason left in *sg:renameerr*.
+(defun sg:Rename (old new / lay r)
+  (setq *sg:renameerr* nil)
   (if (= old new)
-    T
+    new
     (progn
       (setq r (vl-catch-all-apply
                 '(lambda ()
-                   (vla-put-Name (vla-Item (vla-get-Layouts (sg:Doc)) old) new))))
-      (not (vl-catch-all-error-p r))
+                   (setq lay (vla-Item (vla-get-Layouts (sg:Doc)) old))
+                   (vla-put-Name lay new)
+                   (vla-get-Name lay))))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (setq *sg:renameerr* (vl-catch-all-error-message r))
+          nil
+        )
+        r
+      )
     )
   )
 )
@@ -1237,7 +1256,8 @@
 ;;; the only layout touched outside the new batch is the source, and only when
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
-                                cur curpos i n tmp target ok made relocked basectr basepos)
+                                cur curpos i n tmp target ok made relocked basectr basepos
+                                pending p r lastactual)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1286,54 +1306,59 @@
       (if (/= curpos firstpos)
         (sg:SetView cur firstpos basepos basectr cols hspace vspace)
       )
-      (if (sg:Rename cur (nth 0 names))
-        (setq cur    (nth 0 names)
-              curpos firstpos
-              made   1
-              i      1)
-        (progn
-          (setq ok nil)
-          (princ (strcat "\nCould not rename layout \"" cur "\"."))
-        )
-      )
+      (setq pending (list (cons src (nth 0 names)))
+            made    1
+            i       1)
+      (princ (strcat "\nSheet 1 of " (itoa n) ": reusing \"" src "\""))
     )
   )
 
-  ;; Every remaining sheet is a copy of the sheet before it, panned one grid step on
+  ;; Create and position every sheet first, under a plain temporary name.
+  ;; Renaming is left until the end: the copy chain has to make each layout
+  ;; current, and a final sheet name carries padding spaces that do not always
+  ;; survive a round trip through CTAB and the LAYOUT command.
   (while (and ok (< i n))
     (setq target (+ firstpos i)
           tmp    (sg:UniqueName "SG_TMP"))
     (if (sg:CopyLayoutTo cur tmp)
       (progn
         (sg:SetView tmp target basepos basectr cols hspace vspace)
-        (if (sg:Rename tmp (nth i names))
-          (progn
-            (setq cur    (nth i names)
-                  curpos target
-                  made   (1+ made))
-            (princ (strcat "\nSheet " (itoa (1+ i)) " of " (itoa n) ": " (nth i names)))
-          )
-          (progn
-            (setq ok nil)
-            (princ (strcat "\nCould not rename layout \"" tmp "\" to \"" (nth i names) "\"."))
-          )
-        )
+        (setq pending (append pending (list (cons tmp (nth i names))))
+              cur     tmp
+              made    (1+ made))
+        (princ (strcat "\nSheet " (itoa (1+ i)) " of " (itoa n) " created"))
       )
       (progn
         (setq ok nil)
-        (princ (strcat "\nCould not copy layout \"" cur "\"."))
+        (princ (strcat "\n** Could not copy layout \"" cur "\"."))
       )
     )
     (setq i (1+ i))
   )
 
+  ;; Now that nothing else depends on the layout names, apply them
+  (setq curpos (+ firstpos (1- (max made 1))))
+  (foreach p pending
+    (setq r (sg:Rename (car p) (cdr p)))
+    (cond
+      ((null r)
+       (setq ok nil)
+       (princ (strcat "\n** Could not rename \"" (car p) "\" to \"" (cdr p)
+                      "\"\n   AutoCAD said: " (sg:Str *sg:renameerr* "no reason given"))))
+      ((/= r (cdr p))
+       (setq lastactual r)
+       (princ (strcat "\n** Stored as \"" r "\" rather than \"" (cdr p) "\"")))
+      (T (setq lastactual r))
+    )
+  )
+
   ;; Lock again exactly the viewports that were unlocked to allow panning
   (setq relocked (sg:RelockAll))
 
-  (if (> made 0)
+  (if (and (> made 0) lastactual)
     (progn
-      (setvar "CTAB" cur)
-      (sg:StateSave cols hspace vspace curpos cur)
+      (setvar "CTAB" lastactual)
+      (sg:StateSave cols hspace vspace curpos lastactual)
       (command "_.REGENALL")
     )
   )
