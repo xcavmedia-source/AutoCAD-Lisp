@@ -170,11 +170,23 @@
 ;;                     stream to end up somewhere unexpected                                                                      ;;
 ;;                   - The view height used is printed, so a sheet coming out at the wrong scale shows up                         ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.14: Restored MSPACE - CVPORT alone cannot enter a viewport                                                       ;;
+;;                   - v1.13 dropped MSPACE and set CVPORT on its own. CVPORT chooses between viewports                           ;;
+;;                     once inside model space, it does not cross into it from paper space, so the check                          ;;
+;;                     failed on every sheet, no zoom ran, and all sheets kept the source view                                    ;;
+;;                   - MSPACE activates a viewport by itself, so CVPORT is only set if MSPACE chose a                             ;;
+;;                     different one, and that is done under a catch: a viewport ID read before the layout                        ;;
+;;                     had ever been opened is not always still valid, which is what stopped v1.12                                ;;
+;;                   - Being inside a viewport is now confirmed by CVPORT not being 1, rather than by                             ;;
+;;                     matching an ID that may have changed                                                                       ;;
+;;                   - The run reports how many views it positioned, so sheets left on the source view                            ;;
+;;                     cannot pass as success                                                                                     ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.13")
+(setq sheetgenversion "1.14")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -587,12 +599,19 @@
         ((null vid)
          (princ "\n   ** viewport has no ID - view left alone"))
         (T
-         ;; CVPORT alone moves in and out of a viewport, so ZOOM is the only
-         ;; command involved.  MSPACE and PSPACE are two more chances for the
-         ;; command stream to end up somewhere unexpected.
-         (setvar "CVPORT" vid)
-         (if (/= (getvar "CVPORT") vid)
-           (princ "\n   ** could not activate the viewport - view left alone")
+         ;; MSPACE is what crosses from paper space into a viewport - setting
+         ;; CVPORT alone does not do it.  MSPACE activates a viewport in this
+         ;; layout by itself, so CVPORT is only touched if it picked a different
+         ;; one, and that is done under a catch because an ID read before the
+         ;; layout was ever opened is not always still valid.
+         (command "_.MSPACE")
+         (if (and vid (/= (sg:Int (getvar "CVPORT") 0) vid))
+           (vl-catch-all-apply 'setvar (list "CVPORT" vid))
+         )
+         ;; CVPORT 1 means we are still in paper space, so the zoom would move
+         ;; the sheet rather than the view inside the viewport
+         (if (= 1 (sg:Int (getvar "CVPORT") 1))
+           (princ "\n   ** could not enter the viewport - view left alone")
            (progn
              (if hgt
                (command "_.ZOOM" "_C" "_non" tgt hgt)
@@ -602,7 +621,8 @@
              (setq ok T)
            )
          )
-         (setvar "CVPORT" 1)                ; back out to paper space
+         (command "_.PSPACE")
+         (if (/= 1 (sg:Int (getvar "CVPORT") 1)) (setvar "CVPORT" 1))
         )
       )
     )
@@ -1310,7 +1330,7 @@
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
                                 cur curpos i n tmp target ok made relocked basectr basepos
-                                pending p r lastactual)
+                                pending p r lastactual placed)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1333,6 +1353,7 @@
         *error*      sg:err
         *sg:oldecho* (getvar "CMDECHO")
         *sg:unlocked* nil)
+  (setq placed 0)
   (setvar "CMDECHO" 0)
   (command "_.UNDO" "_Begin")
   (setq *sg:undo-open* T)
@@ -1356,8 +1377,9 @@
   ;; Optionally turn the source layout itself into the first sheet of the batch
   (if reuse
     (progn
-      (if (/= curpos firstpos)
-        (sg:TrySetView cur firstpos basepos basectr cols hspace vspace)
+      (if (or (= curpos firstpos)
+              (sg:TrySetView cur firstpos basepos basectr cols hspace vspace))
+        (setq placed (1+ placed))
       )
       (setq pending (list (cons src (nth 0 names)))
             made    1
@@ -1375,7 +1397,9 @@
           tmp    (sg:UniqueName "SG_TMP"))
     (if (sg:CopyLayoutTo cur tmp)
       (progn
-        (sg:TrySetView tmp target basepos basectr cols hspace vspace)
+        (if (sg:TrySetView tmp target basepos basectr cols hspace vspace)
+          (setq placed (1+ placed))
+        )
         (setq pending (append pending (list (cons tmp (nth i names))))
               cur     tmp
               made    (1+ made))
@@ -1424,7 +1448,12 @@
   (if ok
     (alert (strcat "Automatic Layout Generation Complete\n\n"
                    (itoa made) " sheet(s) ready, ending at grid position "
-                   (itoa curpos) "."
+                   (itoa curpos) ".\n"
+                   (if (= placed made)
+                     "All views positioned."
+                     (strcat (itoa placed) " of " (itoa made)
+                             " views positioned - see the command line for the"
+                             "\nsheets that were missed, and set those views by hand."))
                    (if (> relocked 0)
                      (strcat "\n\n" (itoa relocked)
                              " viewport(s) were display locked. They were released to"
