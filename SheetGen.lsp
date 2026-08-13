@@ -78,11 +78,19 @@
 ;;                   - A rejected Next now raises a message box listing what the dialog actually read,                            ;;
 ;;                     rather than only writing to the error tile and the command line hidden behind it                           ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.4: Input handling                                                                                               ;;
+;;                   - Values may now be separated by commas as well as spaces, so 1,6,1,1 works                                  ;;
+;;                     (a comma is illegal in a layout name, so it is only ever a separator here)                                 ;;
+;;                   - An empty grid position box now falls back to the default for the chosen mode                               ;;
+;;                     instead of being rejected as "must be 1 or more"                                                           ;;
+;;                   - If AutoCAD opens an older sheetgen.dcl that is missing the Mode and Source                                 ;;
+;;                     Layout tiles, that is now detected and reported instead of failing obscurely                               ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.3")
+(setq sheetgenversion "1.4")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -143,7 +151,9 @@
   )
 )
 
-;;; Split STR on spaces and tabs, discarding empty tokens.
+;;; Split STR on spaces, tabs and commas, discarding empty tokens.
+;;; Commas count as separators because they are illegal in a layout name
+;;; anyway, and typing a comma separated list is the natural thing to do.
 (defun sg:Split (str / res tok i ch len)
   (setq res '()
         tok ""
@@ -151,7 +161,7 @@
         len (strlen str))
   (while (<= i len)
     (setq ch (substr str i 1))
-    (if (or (= ch " ") (= ch "\t"))
+    (if (or (= ch " ") (= ch "\t") (= ch ","))
       (progn
         (if (/= tok "") (setq res (cons tok res)))
         (setq tok "")
@@ -613,6 +623,17 @@
   )
 )
 
+;;; T when KEY is a real tile in the dialog that is currently open.
+;;; A missing key either errors or hands back a non string, both of which mean
+;;; the loaded DCL is not the one this file expects.
+(defun sg:TileExists (key / r)
+  (setq r (vl-catch-all-apply 'get_tile (list key)))
+  (if (vl-catch-all-error-p r)
+    nil
+    (eq (type r) 'STR)
+  )
+)
+
 ;;; Which radio button is lit.  Read from the buttons themselves rather than the
 ;;; radio_column, whose value is not reliably set by set_tile on a child button.
 (defun sg:ReadMode ()
@@ -634,7 +655,7 @@
 
 ;;; Read and check every tile.  Only closes the dialog when the input is usable.
 (defun sg:Page1Accept (/ mode cols rows lastrow hspace vspace total
-                         src srcpos firstpos reuse msg)
+                         src srcpos firstpos reuse msg dflt)
   (setq *sg:p-mode*    (sg:ReadMode)
         *sg:p-cols*    (sg:Str (get_tile "cols")       "")
         *sg:p-rows*    (sg:Str (get_tile "rows")       "")
@@ -646,6 +667,9 @@
         *sg:p-sd*      (sg:Str (get_tile "sdnums")     "")
         *sg:p-reuse*   (sg:Str (get_tile "reuse")      "0"))
 
+  ;; What the two grid positions should be if the boxes are left empty
+  (setq dflt (sg:SrcDefaults *sg:p-mode* *sg:layouts*))
+
   (setq mode     *sg:p-mode*
         cols     (sg:Int *sg:p-cols* 0)
         rows     (sg:Int *sg:p-rows* 0)
@@ -653,9 +677,15 @@
         hspace   (atof *sg:p-hspace*)
         vspace   (atof *sg:p-vspace*)
         src      (nth (sg:Int (get_tile "srclayout") 0) *sg:layouts*)
-        srcpos   (sg:Int (get_tile "srcpos")   0)
-        firstpos (sg:Int (get_tile "firstpos") 0)
+        srcpos   (if (= (sg:Trim (get_tile "srcpos")) "")
+                   (sg:Int (cadr dflt) 1)
+                   (sg:Int (get_tile "srcpos") 0))
+        firstpos (if (= (sg:Trim (get_tile "firstpos")) "")
+                   (sg:Int (caddr dflt) 1)
+                   (sg:Int (get_tile "firstpos") 0))
         reuse    (= *sg:p-reuse* "1"))
+
+  (if (null src) (setq src (sg:Str (car dflt) nil)))
 
   (setq total (+ (* (- rows 1) cols) lastrow))
 
@@ -729,6 +759,21 @@
     ((not (new_dialog "sheetgen_page1" dcl-id))
      (unload_dialog dcl-id)
      (alert "SheetGen: the sheetgen_page1 dialog could not be opened.")
+     nil)
+    ;; An older sheetgen.dcl earlier on the support path would open here with
+    ;; the mode and source tiles missing, which is confusing to diagnose
+    ((not (and (sg:TileExists "srcpos")
+               (sg:TileExists "firstpos")
+               (sg:TileExists "srclayout")
+               (sg:TileExists "mode_new")))
+     (unload_dialog dcl-id)
+     (alert (strcat
+       "SheetGen: AutoCAD opened an older sheetgen.dcl.\n\n"
+       "The file it found does not have the Mode and Source Layout tiles that\n"
+       "version " sheetgenversion " needs.\n\n"
+       "Replace every sheetgen.dcl on your support file search path with the\n"
+       "new one, or delete the old copies. (OPTIONS > Files > Support File\n"
+       "Search Path shows the folders AutoCAD looks in, in order.)"))
      nil)
     (T
      (setq *sg:cfg* nil)
