@@ -120,11 +120,20 @@
 ;;                     file cannot be written. Old copies can be deleted                                                          ;;
 ;;                   - SheetGenWhere reports which dialog is actually in use                                                      ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.9: Display locked viewports                                                                                     ;;
+;;                   - A display locked viewport silently refuses to pan, so sheets came out unpanned and                         ;;
+;;                     the run fell over shortly after. Locked viewports are now released before panning                          ;;
+;;                     and locked again when the run finishes                                                                     ;;
+;;                   - Only the viewports actually unlocked are locked again, tracked by entity name, so                          ;;
+;;                     a viewport that was already unlocked stays that way                                                        ;;
+;;                   - The error handler re-locks as well, so a run that stops part way cannot leave                              ;;
+;;                     viewports unlocked. The whole run including the lock changes is one UNDO step                              ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.8")
+(setq sheetgenversion "1.9")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -381,23 +390,67 @@
   (sg:LayoutExists to)
 )
 
-;;; Viewport ID of the first real (non paper space) viewport in layout LNAME, else nil.
-(defun sg:VpId (lname / ss i e id)
-  (setq id nil)
+;;; Every real (non paper space) viewport entity in layout LNAME.
+;;; Viewport 1 is the paper space view itself and is never one of these.
+(defun sg:Viewports (lname / ss i e out)
+  (setq out '())
   (if (setq ss (ssget "_X" (list '(0 . "VIEWPORT") (cons 410 lname))))
     (progn
       (setq i 0)
-      (while (and (not id) (< i (sslength ss)))
-        (setq e (assoc 69 (entget (ssname ss i))))
-        ;; a viewport with no ID, or the paper space viewport (1), is not usable
-        (if (and e (/= 1 (cdr e)))
-          (setq id (cdr e))
+      (while (< i (sslength ss))
+        (setq e (ssname ss i))
+        (if (/= 1 (sg:Int (cdr (assoc 69 (entget e))) 1))
+          (setq out (cons e out))
         )
         (setq i (1+ i))
       )
     )
   )
-  id
+  (reverse out)
+)
+
+;;; Viewport ID of the first real viewport in layout LNAME, else nil.
+(defun sg:VpId (lname / e)
+  (if (setq e (car (sg:Viewports lname)))
+    (sg:Int (cdr (assoc 69 (entget e))) nil)
+  )
+)
+
+;;; T when viewport entity E has its display locked.
+(defun sg:VpLockedP (e / r)
+  (setq r (vl-catch-all-apply 'vla-get-DisplayLocked
+                              (list (vlax-ename->vla-object e))))
+  (if (vl-catch-all-error-p r) nil (equal r :vlax-true))
+)
+
+(defun sg:VpSetLock (e state)
+  (vl-catch-all-apply 'vla-put-DisplayLocked
+                      (list (vlax-ename->vla-object e)
+                            (if state :vlax-true :vlax-false)))
+)
+
+;;; A display locked viewport will not pan - the view simply stays put - so any
+;;; locked viewport has to be released before the sheet can be positioned.
+;;; Each one released is remembered by entity name, so exactly the same ones are
+;;; locked again at the end of the run and nothing else is disturbed.
+(defun sg:UnlockLayout (lname)
+  (foreach e (sg:Viewports lname)
+    (if (sg:VpLockedP e)
+      (progn
+        (sg:VpSetLock e nil)
+        (setq *sg:unlocked* (cons e *sg:unlocked*))
+      )
+    )
+  )
+)
+
+;;; Re-lock everything sg:UnlockLayout released.  Copies of a locked viewport
+;;; are themselves locked, so every new sheet gets released and re-locked too.
+(defun sg:RelockAll (/ n)
+  (setq n (length *sg:unlocked*))
+  (foreach e *sg:unlocked* (sg:VpSetLock e T))
+  (setq *sg:unlocked* nil)
+  n
 )
 
 ;;; Model space offset of grid position IDX.
@@ -424,10 +477,13 @@
                       (sg:GridOffset toidx cols hspace vspace)))
       (if (setq vid (sg:VpId lname))
         (progn
+          (sg:UnlockLayout lname)          ; a locked viewport will not pan
           (command "_.MSPACE")
           (setvar "CVPORT" vid)
           (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
+          (sg:ClearCmd)
           (command "_.PSPACE")
+          (if (/= 1 (getvar "CVPORT")) (setvar "CVPORT" 1))
           T
         )
         nil
@@ -1120,6 +1176,8 @@
     (princ (strcat "\n** SheetGen Error: " msg))
   )
   (sg:ClearCmd)
+  ;; never leave viewports unlocked because the run died part way through
+  (sg:RelockAll)
   (if *sg:undo-open*
     (progn (command "_.UNDO" "_End") (setq *sg:undo-open* nil))
   )
@@ -1132,7 +1190,7 @@
 ;;; the only layout touched outside the new batch is the source, and only when
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
-                                cur curpos i n tmp target ok made)
+                                cur curpos i n tmp target ok made relocked)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1151,9 +1209,10 @@
     )
   )
 
-  (setq *sg:olderr* *error*
-        *error*     sg:err
-        *sg:oldecho* (getvar "CMDECHO"))
+  (setq *sg:olderr*  *error*
+        *error*      sg:err
+        *sg:oldecho* (getvar "CMDECHO")
+        *sg:unlocked* nil)
   (setvar "CMDECHO" 0)
   (command "_.UNDO" "_Begin")
   (setq *sg:undo-open* T)
@@ -1213,6 +1272,9 @@
     (setq i (1+ i))
   )
 
+  ;; Lock again exactly the viewports that were unlocked to allow panning
+  (setq relocked (sg:RelockAll))
+
   (if (> made 0)
     (progn
       (setvar "CTAB" cur)
@@ -1229,7 +1291,12 @@
   (if ok
     (alert (strcat "Automatic Layout Generation Complete\n\n"
                    (itoa made) " sheet(s) ready, ending at grid position "
-                   (itoa curpos) "."))
+                   (itoa curpos) "."
+                   (if (> relocked 0)
+                     (strcat "\n\n" (itoa relocked)
+                             " viewport(s) were display locked. They were released to"
+                             "\nallow panning and have been locked again.")
+                     "")))
     (alert (strcat "SheetGen stopped after " (itoa made)
                    " sheet(s).\nSee the command line for details.\n"
                    "UNDO once to roll the whole run back."))
