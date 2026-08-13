@@ -158,11 +158,23 @@
 ;;                   - A failed rename now reports the reason AutoCAD gave, instead of a bare message                             ;;
 ;;                   - The name AutoCAD actually stored is read back, and a name it altered is reported                           ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.13: A sheet that will not position no longer stops the run                                                       ;;
+;;                   - Positioning is absolute, so one sheet failing cannot affect another. It now runs                           ;;
+;;                     under a catch: the sheets are still built and named and the run finishes, and any                          ;;
+;;                     sheet that was missed is reported so its view can be set by hand                                           ;;
+;;                   - The sheet viewport is chosen as the largest one on the paper rather than whichever                         ;;
+;;                     came back first. A title block sheet often carries small extra viewports, and                              ;;
+;;                     driving one of those left the actual drawing view untouched                                                ;;
+;;                   - CVPORT alone moves in and out of a viewport, so ZOOM is the only command left in                           ;;
+;;                     the positioning path. MSPACE and PSPACE were two more chances for the command                              ;;
+;;                     stream to end up somewhere unexpected                                                                      ;;
+;;                   - The view height used is printed, so a sheet coming out at the wrong scale shows up                         ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.12")
+(setq sheetgenversion "1.13")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -183,6 +195,10 @@
 
 (defun sg:Str (val dflt)
   (if (eq (type val) 'STR) val dflt)
+)
+
+(defun sg:Num (val dflt)
+  (if (numberp val) val dflt)
 )
 
 (defun sg:Trim (str)
@@ -483,10 +499,44 @@
         0.0)
 )
 
-;;; Model space point a viewport is currently centred on, read from the view
-;;; centre (DXF group 12) of the first viewport in LNAME.  nil if unreadable.
+;;; The sheet viewport in LNAME: the one with the largest area on the paper.
+;;; A title block sheet often carries small extra viewports, and picking
+;;; whichever happened to come back first meant sometimes driving one of those
+;;; and leaving the actual drawing view untouched.
+(defun sg:MainViewport (lname / best ba e ed a)
+  (foreach e (sg:Viewports lname)
+    (setq ed (entget e)
+          a  (* (sg:Num (cdr (assoc 40 ed)) 0.0)
+                (sg:Num (cdr (assoc 41 ed)) 0.0)))
+    (if (or (null best) (> a ba)) (setq best e ba a))
+  )
+  best
+)
+
+;;; sg:SetView under a catch.  Positioning is absolute, so a sheet that cannot
+;;; be positioned does not affect any other sheet - there is no reason to
+;;; abandon the run over one.  The sheets still get built and named, and a view
+;;; that was missed can be set by hand afterwards.
+(defun sg:TrySetView (lname pos basepos basectr cols hspace vspace / r)
+  (setq r (vl-catch-all-apply
+            'sg:SetView
+            (list lname pos basepos basectr cols hspace vspace)))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (sg:ClearCmd)
+      (if (/= 1 (sg:Int (getvar "CVPORT") 1)) (setvar "CVPORT" 1))
+      (princ (strcat "\n   ** could not position this sheet: "
+                     (vl-catch-all-error-message r)))
+      nil
+    )
+    r
+  )
+)
+
+;;; Model space point the sheet viewport in LNAME is centred on, read from its
+;;; view centre (DXF group 12).  nil if unreadable.
 (defun sg:ViewCentre (lname / e ctr)
-  (if (and (setq e (car (sg:Viewports lname)))
+  (if (and (setq e (sg:MainViewport lname))
            (setq ctr (assoc 12 (entget e))))
     (list (car (cdr ctr)) (cadr (cdr ctr)) 0.0)
   )
@@ -508,18 +558,19 @@
 ;;; ended up being moved.
 (defun sg:SetView (lname pos basepos basectr cols hspace vspace / e ed vid hgt tgt ok)
   (setq ok nil)
-  (if (and basectr (setq e (car (sg:Viewports lname))))
+  (if (and basectr (setq e (sg:MainViewport lname)))
     (progn
       (setq ed  (entget e)
             vid (sg:Int (cdr (assoc 69 ed)) nil)
-            hgt (cdr (assoc 45 ed))          ; view height, keeps the scale
+            hgt (sg:Num (cdr (assoc 45 ed)) nil)   ; view height, keeps the scale
             tgt (mapcar '+
                         basectr
                         (mapcar '-
                                 (sg:GridOffset pos     cols hspace vspace)
                                 (sg:GridOffset basepos cols hspace vspace))))
       (princ (strcat "\n   position " (itoa pos)
-                     " -> centre " (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
+                     " -> centre " (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)
+                     "  height " (if hgt (rtos hgt 2 2) "unknown")))
 
       ;; ZOOM inside a display locked viewport zooms paper space instead
       (if (sg:VpLockedP e)
@@ -536,7 +587,9 @@
         ((null vid)
          (princ "\n   ** viewport has no ID - view left alone"))
         (T
-         (command "_.MSPACE")
+         ;; CVPORT alone moves in and out of a viewport, so ZOOM is the only
+         ;; command involved.  MSPACE and PSPACE are two more chances for the
+         ;; command stream to end up somewhere unexpected.
          (setvar "CVPORT" vid)
          (if (/= (getvar "CVPORT") vid)
            (princ "\n   ** could not activate the viewport - view left alone")
@@ -549,11 +602,11 @@
              (setq ok T)
            )
          )
-         (command "_.PSPACE")
-         (if (/= 1 (getvar "CVPORT")) (setvar "CVPORT" 1))
+         (setvar "CVPORT" 1)                ; back out to paper space
         )
       )
     )
+    (princ (strcat "\n   ** no viewport found in \"" lname "\" - view left alone"))
   )
   ok
 )
@@ -1304,7 +1357,7 @@
   (if reuse
     (progn
       (if (/= curpos firstpos)
-        (sg:SetView cur firstpos basepos basectr cols hspace vspace)
+        (sg:TrySetView cur firstpos basepos basectr cols hspace vspace)
       )
       (setq pending (list (cons src (nth 0 names)))
             made    1
@@ -1322,7 +1375,7 @@
           tmp    (sg:UniqueName "SG_TMP"))
     (if (sg:CopyLayoutTo cur tmp)
       (progn
-        (sg:SetView tmp target basepos basectr cols hspace vspace)
+        (sg:TrySetView tmp target basepos basectr cols hspace vspace)
         (setq pending (append pending (list (cons tmp (nth i names))))
               cur     tmp
               made    (1+ made))
