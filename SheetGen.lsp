@@ -138,11 +138,23 @@
 ;;                     the sheet being positioned can be touched, and no space switching is involved                              ;;
 ;;                   - Each move prints "view A -> B (cols N) dx .. dy .." so a wrong grid step is visible                        ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.11: Absolute positioning, verified before it acts                                                                ;;
+;;                   - entmod on the view centre was accepted but had no effect, so every sheet came out                          ;;
+;;                     showing the source view. Back to ZOOM Center, which the command form proved does                           ;;
+;;                     work, but aimed at a destination rather than given a displacement                                          ;;
+;;                   - Every sheet is now positioned from one reference, the source layout's view centre                          ;;
+;;                     and grid position. Sheets no longer chain off each other, so one that fails cannot                         ;;
+;;                     drag the rest out of step                                                                                  ;;
+;;                   - CTAB and CVPORT are checked after being set. If either is not what was asked for the                       ;;
+;;                     view is left alone and it says so, rather than zooming whatever is active - which is                       ;;
+;;                     how sheets that were already finished got moved                                                            ;;
+;;                   - Each sheet prints the centre it is aimed at                                                                ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.10")
+(setq sheetgenversion "1.11")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -452,49 +464,79 @@
         0.0)
 )
 
-;;; Move the view inside layout LNAME's viewport from grid position FROMIDX to
-;;; TOIDX.  Returns T if a viewport was found (or no move was needed).
+;;; Model space point a viewport is currently centred on, read from the view
+;;; centre (DXF group 12) of the first viewport in LNAME.  nil if unreadable.
+(defun sg:ViewCentre (lname / e ctr)
+  (if (and (setq e (car (sg:Viewports lname)))
+           (setq ctr (assoc 12 (entget e))))
+    (list (car (cdr ctr)) (cadr (cdr ctr)) 0.0)
+  )
+)
+
+;;; Point layout LNAME's viewport at grid position POS.
 ;;;
-;;; This edits the viewport's view centre (DXF group 12) directly rather than
-;;; running MSPACE / CVPORT / -PAN / PSPACE.  Driving it with commands means
-;;; switching spaces and relying on which viewport AutoCAD considers active, and
-;;; when that goes wrong the pan does not fail - it silently lands on paper
-;;; space or on another layout's viewport.  Editing the entity cannot affect any
-;;; layout other than this one.
-(defun sg:PanView (lname fromidx toidx cols hspace vspace / d c ed ctr new done)
-  (if (= fromidx toidx)
-    T
+;;; BASECTR is the model point the source layout was centred on and BASEPOS is
+;;; the grid position it was showing, so the centre for any sheet is worked out
+;;; from those two.  That makes every sheet positioned absolutely and
+;;; independently: one sheet failing cannot drag the rest out of step, which a
+;;; chain of relative pans does.
+;;;
+;;; ZOOM Center is used rather than PAN for the same reason - it takes the
+;;; destination outright instead of a displacement from wherever the view
+;;; happens to be.  CTAB and CVPORT are checked after being set, because if the
+;;; layout or the viewport is not the one intended the zoom does not fail, it
+;;; just lands somewhere else - which is how sheets that were already finished
+;;; ended up being moved.
+(defun sg:SetView (lname pos basepos basectr cols hspace vspace / e ed vid hgt tgt ok)
+  (setq ok nil)
+  (if (and basectr (setq e (car (sg:Viewports lname))))
     (progn
-      ;; The view centre moves with the target, so this is target minus current
-      (setq d (mapcar '-
-                      (sg:GridOffset toidx   cols hspace vspace)
-                      (sg:GridOffset fromidx cols hspace vspace)))
-      (princ (strcat "\n   view " (itoa fromidx) " -> " (itoa toidx)
-                     "  (cols " (itoa cols) ")  dx " (rtos (car d) 2 2)
-                     "  dy " (rtos (cadr d) 2 2)))
-      (setq done nil)
-      (foreach e (sg:Viewports lname)
-        (setq ed (entget e))
-        (if (setq ctr (assoc 12 ed))
-          (progn
-            ;; entmod is refused on some releases while the display is locked
-            (if (sg:VpLockedP e)
-              (progn
-                (sg:VpSetLock e nil)
-                (setq *sg:unlocked* (cons e *sg:unlocked*))
-              )
-            )
-            (setq c   (cdr ctr)
-                  new (list (+ (car c) (car d)) (+ (cadr c) (cadr d))))
-            (if (caddr c) (setq new (append new (list (caddr c)))))
-            (entmod (subst (cons 12 new) ctr ed))
-            (setq done T)
-          )
+      (setq ed  (entget e)
+            vid (sg:Int (cdr (assoc 69 ed)) nil)
+            hgt (cdr (assoc 45 ed))          ; view height, keeps the scale
+            tgt (mapcar '+
+                        basectr
+                        (mapcar '-
+                                (sg:GridOffset pos     cols hspace vspace)
+                                (sg:GridOffset basepos cols hspace vspace))))
+      (princ (strcat "\n   position " (itoa pos)
+                     " -> centre " (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
+
+      ;; ZOOM inside a display locked viewport zooms paper space instead
+      (if (sg:VpLockedP e)
+        (progn
+          (sg:VpSetLock e nil)
+          (setq *sg:unlocked* (cons e *sg:unlocked*))
         )
       )
-      done
+
+      (setvar "CTAB" lname)
+      (cond
+        ((/= (strcase (getvar "CTAB")) (strcase lname))
+         (princ (strcat "\n   ** could not make layout \"" lname "\" current - view left alone")))
+        ((null vid)
+         (princ "\n   ** viewport has no ID - view left alone"))
+        (T
+         (command "_.MSPACE")
+         (setvar "CVPORT" vid)
+         (if (/= (getvar "CVPORT") vid)
+           (princ "\n   ** could not activate the viewport - view left alone")
+           (progn
+             (if hgt
+               (command "_.ZOOM" "_C" "_non" tgt hgt)
+               (command "_.ZOOM" "_C" "_non" tgt "")
+             )
+             (sg:ClearCmd)
+             (setq ok T)
+           )
+         )
+         (command "_.PSPACE")
+         (if (/= 1 (getvar "CVPORT")) (setvar "CVPORT" 1))
+        )
+      )
     )
   )
+  ok
 )
 
 
@@ -1195,7 +1237,7 @@
 ;;; the only layout touched outside the new batch is the source, and only when
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
-                                cur curpos i n tmp target ok made relocked)
+                                cur curpos i n tmp target ok made relocked basectr basepos)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1226,12 +1268,23 @@
         curpos srcpos
         i      0)
 
+  ;; Where the source layout is looking now.  Every sheet is positioned from
+  ;; this one reference, so a sheet that fails cannot pull the others off.
+  (setq basectr (sg:ViewCentre src)
+        basepos srcpos)
+  (if basectr
+    (princ (strcat "\nSource \"" src "\" is centred on "
+                   (rtos (car basectr) 2 2) "," (rtos (cadr basectr) 2 2)
+                   " at grid position " (itoa basepos) "."))
+    (princ (strcat "\n** No viewport found in \"" src
+                   "\" - sheets will be created but not positioned."))
+  )
+
   ;; Optionally turn the source layout itself into the first sheet of the batch
   (if reuse
     (progn
-      (setvar "CTAB" cur)
-      (if (not (sg:PanView cur curpos firstpos cols hspace vspace))
-        (princ (strcat "\nNo viewport found in layout \"" cur "\" - view not panned."))
+      (if (/= curpos firstpos)
+        (sg:SetView cur firstpos basepos basectr cols hspace vspace)
       )
       (if (sg:Rename cur (nth 0 names))
         (setq cur    (nth 0 names)
@@ -1252,10 +1305,7 @@
           tmp    (sg:UniqueName "SG_TMP"))
     (if (sg:CopyLayoutTo cur tmp)
       (progn
-        (setvar "CTAB" tmp)
-        (if (not (sg:PanView tmp curpos target cols hspace vspace))
-          (princ (strcat "\nNo viewport found in the copy of \"" cur "\" - view not panned."))
-        )
+        (sg:SetView tmp target basepos basectr cols hspace vspace)
         (if (sg:Rename tmp (nth i names))
           (progn
             (setq cur    (nth i names)
