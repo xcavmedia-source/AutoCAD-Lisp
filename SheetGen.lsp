@@ -100,11 +100,19 @@
 ;;                   - Said so in the dialog, since the position boxes are otherwise easy to misread as                           ;;
 ;;                     something you are expected to work out yourself                                                            ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.7: Friendlier DCL version mismatch                                                                              ;;
+;;                   - The out of date DCL check no longer counts the three readout tiles, which are                              ;;
+;;                     cosmetic. An older dialog file now loses the row/column readout instead of                                 ;;
+;;                     refusing to open                                                                                           ;;
+;;                   - The message now names the tiles that are actually missing, says the two files are                          ;;
+;;                     a matched pair, and explains that a stale copy earlier on the support file search                          ;;
+;;                     path will be found first                                                                                   ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.6")
+(setq sheetgenversion "1.7")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -653,24 +661,30 @@
   )
 )
 
+;;; set_tile that tolerates the tile not being there, for cosmetic tiles that
+;;; an older DCL will not have.
+(defun sg:SetTile (key val)
+  (vl-catch-all-apply 'set_tile (list key (sg:Str val "")))
+)
+
 ;;; Refresh the two position readouts and the run summary.
 (defun sg:UpdateHints (/ c rows lastrow total first last)
   (setq c       (sg:Int (get_tile "cols") 0)
         rows    (sg:Int (get_tile "rows") 0)
         lastrow (if (= (sg:Trim (get_tile "lastrow")) "") c (sg:Int (get_tile "lastrow") 0))
         first   (sg:Int (get_tile "firstpos") 0))
-  (set_tile "srchint"   (sg:PosHint (sg:Int (get_tile "srcpos") 0) c))
-  (set_tile "firsthint" (sg:PosHint first c))
+  (sg:SetTile "srchint"   (sg:PosHint (sg:Int (get_tile "srcpos") 0) c))
+  (sg:SetTile "firsthint" (sg:PosHint first c))
   (if (and (> c 0) (> rows 0) (> lastrow 0) (> first 0))
     (progn
       (setq total (+ (* (- rows 1) c) lastrow)
             last  (+ first total -1))
-      (set_tile "summary"
-                (strcat "This run: " (itoa total) " sheet(s), position "
-                        (itoa first) " (" (sg:PosHint first c) ") through "
-                        (itoa last)  " (" (sg:PosHint last  c) ")"))
+      (sg:SetTile "summary"
+                  (strcat "This run: " (itoa total) " sheet(s), position "
+                          (itoa first) " (" (sg:PosHint first c) ") through "
+                          (itoa last)  " (" (sg:PosHint last  c) ")"))
     )
-    (set_tile "summary" "")
+    (sg:SetTile "summary" "")
   )
 )
 
@@ -683,6 +697,18 @@
     nil
     (eq (type r) 'STR)
   )
+)
+
+;;; Tiles this version cannot run without, that are absent from the open dialog.
+;;; The three readout tiles are deliberately not listed: they are cosmetic, so a
+;;; slightly older DCL loses the readout rather than refusing to open at all.
+(defun sg:MissingTiles (/ out)
+  (foreach k '("mode_new" "mode_add" "srclayout" "srcpos" "firstpos" "reuse"
+               "cols" "rows" "lastrow" "hspace" "vspace"
+               "partnums" "quantities" "sdnums")
+    (if (not (sg:TileExists k)) (setq out (cons k out)))
+  )
+  (reverse out)
 )
 
 ;;; Which radio button is lit.  Read from the buttons themselves rather than the
@@ -812,7 +838,7 @@
 )
 
 ;;; Show the setup dialog.  Returns the config list, or nil if cancelled.
-(defun sg:Page1 (start-mode / dcl-id res p)
+(defun sg:Page1 (start-mode / dcl-id res p miss)
   (sg:InitPrefs)
   (setq *sg:layouts* (sg:LayoutNames))
   (cond
@@ -826,22 +852,19 @@
      (unload_dialog dcl-id)
      (alert "SheetGen: the sheetgen_page1 dialog could not be opened.")
      nil)
-    ;; An older sheetgen.dcl earlier on the support path would open here with
-    ;; the mode and source tiles missing, which is confusing to diagnose
-    ((not (and (sg:TileExists "srcpos")
-               (sg:TileExists "firstpos")
-               (sg:TileExists "srclayout")
-               (sg:TileExists "mode_new")
-               (sg:TileExists "srchint")
-               (sg:TileExists "summary")))
+    ;; An older sheetgen.dcl earlier on the support path opens here with tiles
+    ;; missing, which is otherwise very confusing to diagnose
+    ((setq miss (sg:MissingTiles))
      (unload_dialog dcl-id)
+     (setq p "")
+     (foreach k miss (setq p (strcat p (if (= p "") "" ", ") k)))
      (alert (strcat
-       "SheetGen: AutoCAD opened an older sheetgen.dcl.\n\n"
-       "The file it found does not have the Mode and Source Layout tiles that\n"
-       "version " sheetgenversion " needs.\n\n"
-       "Replace every sheetgen.dcl on your support file search path with the\n"
-       "new one, or delete the old copies. (OPTIONS > Files > Support File\n"
-       "Search Path shows the folders AutoCAD looks in, in order.)"))
+       "SheetGen.lsp version " sheetgenversion " loaded an out of date sheetgen.dcl.\n\n"
+       "Missing from the dialog file:\n  " p "\n\n"
+       "SheetGen.lsp and sheetgen.dcl are a matched pair - update both together.\n\n"
+       "If you have already replaced it, AutoCAD is finding an older copy first.\n"
+       "OPTIONS > Files > Support File Search Path lists the folders it searches,\n"
+       "in order. Delete or overwrite any other sheetgen.dcl in those folders."))
      nil)
     (T
      (setq *sg:cfg* nil)
