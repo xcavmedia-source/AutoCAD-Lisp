@@ -110,11 +110,21 @@
 ;;                   - The message now prints the full path of the sheetgen.dcl AutoCAD actually opened                           ;;
 ;;                   - New SheetGenWhere command reports the loaded version and the dcl path and date                             ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.8: The setup dialog now lives inside this file                                                                  ;;
+;;                   - sheetgen.dcl is no longer needed. SheetGen.lsp writes the dialog out to a                                  ;;
+;;                     temporary file and loads that, so there is one file to install and the two can                             ;;
+;;                     never drift apart or be mismatched again                                                                   ;;
+;;                   - This also takes the support file search path out of the picture entirely.                                  ;;
+;;                     SheetGen.lsp can be loaded from any folder; nothing else has to be findable                                ;;
+;;                   - A sheetgen.dcl on the search path is now only a fallback, used if the temporary                            ;;
+;;                     file cannot be written. Old copies can be deleted                                                          ;;
+;;                   - SheetGenWhere reports which dialog is actually in use                                                      ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.7")
+(setq sheetgenversion "1.8")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -701,6 +711,152 @@
   )
 )
 
+;;; The page 1 dialog, carried inside this file.
+;;; It used to live in a separate sheetgen.dcl resolved through the support
+;;; file search path, which meant the two files could drift apart or a stale
+;;; copy in another folder could be picked up instead. Keeping it here makes
+;;; a version mismatch impossible.
+(defun sg:Page1Dcl (/ s)
+  (setq s "")
+  (foreach ln (list
+    "sheetgen_page1 : dialog {"
+    "  label = \"SheetGen - Layout Grid Setup\";"
+    ""
+    "  : text {"
+    "    label = \"Check that your drawing properties are entered and your title block is set.\";"
+    "  }"
+    "  : text {"
+    "    label = \"Part numbers longer than 4 characters may need the DIESEL expression adjusted.\";"
+    "  }"
+    ""
+    "  spacer;"
+    ""
+    "  : boxed_column {"
+    "    label = \"Mode\";"
+    ""
+    "    : radio_column {"
+    "      key = \"modegrp\";"
+    "      : radio_button {"
+    "        key = \"mode_new\";"
+    "        label = \"Create a new series of sheets\";"
+    "      }"
+    "      : radio_button {"
+    "        key = \"mode_add\";"
+    "        label = \"Add more sheets after the tabs already in this drawing\";"
+    "      }"
+    "    }"
+    "  }"
+    ""
+    "  : boxed_column {"
+    "    label = \"Source Layout\";"
+    ""
+    "    : text {"
+    "      label = \"To add sheets: copy your last tab, then run this in Add mode with that tab as the source.\";"
+    "    }"
+    "    : text {"
+    "      label = \"Positions count straight through the grid - row 1 left to right, then row 2, and so on.\";"
+    "    }"
+    "    : text {"
+    "      label = \"They are filled in from where the last run stopped, so normally you can leave them alone.\";"
+    "    }"
+    ""
+    "    : row {"
+    "      : column {"
+    "        : text { label = \"Copy sheets from layout:\"; }"
+    "        : popup_list { key = \"srclayout\"; width = 30; }"
+    "      }"
+    "      : column {"
+    "        : text { label = \"Grid position it shows now:\"; }"
+    "        : edit_box { key = \"srcpos\"; width = 6; edit_limit = 6; }"
+    "        : text { key = \"srchint\"; label = \"= row 00, col 00\"; width = 18; }"
+    "      }"
+    "      : column {"
+    "        : text { label = \"Grid position of first new sheet:\"; }"
+    "        : edit_box { key = \"firstpos\"; width = 6; edit_limit = 6; }"
+    "        : text { key = \"firsthint\"; label = \"= row 00, col 00\"; width = 18; }"
+    "      }"
+    "    }"
+    ""
+    "    : toggle {"
+    "      key = \"reuse\";"
+    "      label = \"Reuse the source layout as the first sheet of this batch\";"
+    "    }"
+    "  }"
+    ""
+    "  : boxed_column {"
+    "    label = \"Layout Grid Configuration\";"
+    ""
+    "    : row {"
+    "      : column {"
+    "        : text { label = \"Columns:\"; }"
+    "        : edit_box { key = \"cols\"; width = 5; edit_limit = 6; }"
+    "      }"
+    "      : column {"
+    "        : text { label = \"Rows:\"; }"
+    "        : edit_box { key = \"rows\"; width = 5; edit_limit = 6; }"
+    "      }"
+    "      : column {"
+    "        : text { label = \"Layouts in Last Row:\"; }"
+    "        : edit_box { key = \"lastrow\"; width = 5; edit_limit = 6; }"
+    "      }"
+    "    }"
+    ""
+    "    : row {"
+    "      : column {"
+    "        : text { label = \"Horizontal Spacing:\"; }"
+    "        : edit_box { key = \"hspace\"; width = 10; edit_limit = 20; }"
+    "      }"
+    "      : column {"
+    "        : text { label = \"Vertical Spacing:\"; }"
+    "        : edit_box { key = \"vspace\"; width = 10; edit_limit = 20; }"
+    "      }"
+    "    }"
+    "  }"
+    ""
+    "  : boxed_column {"
+    "    label = \"Part Number and SD Information\";"
+    ""
+    "    : text {"
+    "      label = \"Separate values with spaces. Enter a single value to run a sequence.\";"
+    "    }"
+    ""
+    "    : column {"
+    "      : text { label = \"Part Numbers (first part number ONLY for sequential):\"; }"
+    "      : edit_box { key = \"partnums\"; width = 80; edit_limit = 255; }"
+    "    }"
+    ""
+    "    : column {"
+    "      : text { label = \"Quantities (single value applies to every sheet):\"; }"
+    "      : edit_box { key = \"quantities\"; width = 80; edit_limit = 255; }"
+    "    }"
+    ""
+    "    : column {"
+    "      : text { label = \"SD Numbers (first SD number ONLY for sequential):\"; }"
+    "      : edit_box { key = \"sdnums\"; width = 80; edit_limit = 255; }"
+    "    }"
+    "  }"
+    ""
+    "  spacer;"
+    ""
+    "  : text {"
+    "    key = \"summary\";"
+    "    label = \"This run: 000 sheet(s), position 000 (= row 00, col 00) through 000 (= row 00, col 00)\";"
+    "    width = 80;"
+    "  }"
+    ""
+    "  : errtile { width = 70; }"
+    ""
+    "  : row {"
+    "    : button { key = \"next\"; label = \"Next >\"; is_default = true; }"
+    "    : button { key = \"cancel\"; label = \"Cancel\"; is_cancel = true; }"
+    "  }"
+    "}"
+  )
+    (setq s (strcat s ln "\n"))
+  )
+  s
+)
+
 ;;; Tiles this version cannot run without, that are absent from the open dialog.
 ;;; The three readout tiles are deliberately not listed: they are cosmetic, so a
 ;;; slightly older DCL loses the readout rather than refusing to open at all.
@@ -840,15 +996,35 @@
 )
 
 ;;; Show the setup dialog.  Returns the config list, or nil if cancelled.
-(defun sg:Page1 (start-mode / dcl-id res p miss)
+(defun sg:Page1 (start-mode / dcl-id res p miss tmp out)
   (sg:InitPrefs)
   (setq *sg:layouts* (sg:LayoutNames))
+
+  ;; Write the built in dialog out and load that.  Only if the temporary file
+  ;; cannot be produced do we fall back to a sheetgen.dcl on the search path.
+  (setq dcl-id -1)
+  (if (setq tmp (sg:WriteTempDcl (sg:Page1Dcl)))
+    (progn
+      (setq dcl-id (load_dialog tmp))
+      (setq *sg:dclsource* (if (>= dcl-id 0) "built in" nil))
+    )
+  )
+  (if (< dcl-id 0)
+    (progn
+      (setq dcl-id (load_dialog "sheetgen.dcl"))
+      (setq *sg:dclsource* (sg:Str (findfile "sheetgen.dcl") "sheetgen.dcl"))
+    )
+  )
+  ;; NOTE: tmp is deleted at the very end, not here - the file has to survive
+  ;; until unload_dialog is done with it.
+  (setq out
   (cond
     ((null *sg:layouts*)
+     (if (>= dcl-id 0) (unload_dialog dcl-id))
      (alert "SheetGen: this drawing has no paper space layouts to copy from.")
      nil)
-    ((< (setq dcl-id (load_dialog "sheetgen.dcl")) 0)
-     (alert "SheetGen: sheetgen.dcl was not found on the support file search path.")
+    ((< dcl-id 0)
+     (alert "SheetGen: the setup dialog could not be created.")
      nil)
     ((not (new_dialog "sheetgen_page1" dcl-id))
      (unload_dialog dcl-id)
@@ -929,7 +1105,9 @@
        nil
      )
     )
-  )
+  ))
+  (if tmp (vl-file-delete tmp))
+  out
 )
 
 
@@ -1161,19 +1339,15 @@
 
 ;;; Reports which files are actually in play.  The two must be a matched pair,
 ;;; and a stale sheetgen.dcl earlier on the search path is easy to miss.
-(defun c:SheetGenWhere (/ f d)
+(defun c:SheetGenWhere (/ f)
   (princ (strcat "\nSheetGen.lsp version " sheetgenversion))
-  (setq f (findfile "sheetgen.dcl"))
-  (princ (strcat "\nsheetgen.dcl in use: "
-                 (if f f "NOT FOUND on the support file search path")))
-  ;; vl-file-systime -> (year month day-of-week day hours minutes seconds)
-  (if (and f (setq d (vl-file-systime f)))
-    (princ (strcat "\n  last written:      "
-                   (itoa (nth 1 d)) "/" (itoa (nth 3 d)) "/" (itoa (nth 0 d)) "  "
-                   (itoa (nth 4 d)) ":"
-                   (if (< (nth 5 d) 10) "0" "") (itoa (nth 5 d))))
+  (princ (strcat "\nSetup dialog: "
+                 (sg:Str *sg:dclsource* "not opened yet - run SheetGen once")))
+  (princ "\nThe dialog is built into SheetGen.lsp, so there is no sheetgen.dcl to keep in step.")
+  (if (setq f (findfile "sheetgen.dcl"))
+    (princ (strcat "\nNote: a sheetgen.dcl still exists at " f
+                   "\n      It is no longer used and can be deleted."))
   )
-  (princ "\nIf that is not the file you just saved, AutoCAD found an older copy first.")
   (princ)
 )
 
