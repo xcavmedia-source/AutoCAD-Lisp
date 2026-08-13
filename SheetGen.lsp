@@ -192,11 +192,20 @@
 ;;                   - After each zoom the viewport is read back. A view centre that is not where it was                          ;;
 ;;                     aimed, or a view height that moved at all, is reported per sheet                                           ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.16: Pan, never zoom                                                                                              ;;
+;;                   - The sheet already carries its viewport scale and nothing here has any business                             ;;
+;;                     changing it. PAN moves the view and cannot alter the scale; ZOOM takes a height                            ;;
+;;                     and can, which is exactly what went wrong in v1.15                                                         ;;
+;;                   - The displacement is worked out from the view centre read out of the viewport to                            ;;
+;;                     the centre the grid position calls for. Reading the current centre every time keeps                        ;;
+;;                     it self correcting: a sheet that starts off does not hand its error to the next                            ;;
+;;                   - Both centres are printed per sheet, so what moved and where is on the record                               ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.15")
+(setq sheetgenversion "1.16")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -599,21 +608,29 @@
 ;;; layout or the viewport is not the one intended the zoom does not fail, it
 ;;; just lands somewhere else - which is how sheets that were already finished
 ;;; ended up being moved.
-(defun sg:SetView (lname pos basepos basectr cols hspace vspace / e ed vid hgt tgt ok)
+(defun sg:SetView (lname pos basepos basectr cols hspace vspace / e ed vid hgt ctr tgt d ok)
   (setq ok nil)
   (if (and basectr (setq e (sg:MainViewport lname)))
     (progn
       (setq ed  (entget e)
             vid (sg:Int (cdr (assoc 69 ed)) nil)
-            hgt (sg:Num (cdr (assoc 45 ed)) nil)   ; view height, keeps the scale
+            hgt (sg:Num (cdr (assoc 45 ed)) nil)   ; only to confirm it is unchanged
+            ctr (cdr (assoc 12 ed))                ; where this viewport looks now
             tgt (mapcar '+
                         basectr
                         (mapcar '-
                                 (sg:GridOffset pos     cols hspace vspace)
                                 (sg:GridOffset basepos cols hspace vspace))))
+      ;; Displacement from where the view actually is to where it belongs.
+      ;; Reading the current centre each time makes this self correcting: a
+      ;; sheet that started off does not pass its error on to the next.
+      ;; PAN moves the drawing, so it is the opposite of the view movement.
+      (setq d (list (- (car ctr) (car tgt))
+                    (- (cadr ctr) (cadr tgt))
+                    0.0))
       (princ (strcat "\n   position " (itoa pos)
-                     " -> centre " (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)
-                     "  height " (if hgt (rtos hgt 2 2) "unknown")))
+                     ": " (rtos (car ctr) 2 2) "," (rtos (cadr ctr) 2 2)
+                     " -> "  (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
 
       ;; ZOOM inside a display locked viewport zooms paper space instead
       (if (sg:VpLockedP e)
@@ -644,11 +661,10 @@
          (if (= 1 (sg:Int (getvar "CVPORT") 1))
            (princ "\n   ** could not enter the viewport - view left alone")
            (progn
-             ;; Take the default at "magnification or height", which is the
-             ;; height the viewport already has.  Supplying a height read from
-             ;; DXF group 45 rescaled the view instead of preserving it, and
-             ;; every copy then inherited the wrong scale.
-             (command "_.ZOOM" "_C" "_non" tgt "")
+             ;; PAN, not ZOOM.  The viewport scale is already set by the sheet
+             ;; and nothing here should alter it; panning moves the view and
+             ;; cannot change the scale, whereas ZOOM takes a height and can.
+             (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
              (sg:ClearCmd)
              (setq ok T)
              (sg:CheckView e tgt hgt)
