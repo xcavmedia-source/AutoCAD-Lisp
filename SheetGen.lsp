@@ -71,11 +71,18 @@
 ;;                   - Viewport lookup no longer assumes DXF group 69 is present                                                  ;;
 ;;                   - Dialog callbacks run under a catch, and any error names the step it happened in                            ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.3: Fixed the Next button doing nothing at all                                                                   ;;
+;;                   - The v1.2 type helpers tested (= (type val) 'STR). In AutoLISP = compares numbers                           ;;
+;;                     and strings only, so comparing two symbols raised an error on every single call,                           ;;
+;;                     starting with the first line of the Next handler. Now uses eq                                              ;;
+;;                   - A rejected Next now raises a message box listing what the dialog actually read,                            ;;
+;;                     rather than only writing to the error tile and the command line hidden behind it                           ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.2")
+(setq sheetgenversion "1.3")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -86,15 +93,16 @@
 ;;; setvar or entmake goes through here so a nil can never reach them.
 (defun sg:Int (val dflt)
   (cond
-    ((= (type val) 'INT)  val)
-    ((= (type val) 'REAL) (fix val))
-    ((= (type val) 'STR)  (atoi val))
+    ;; note: = compares numbers and strings only, symbols need eq
+    ((eq (type val) 'INT)  val)
+    ((eq (type val) 'REAL) (fix val))
+    ((eq (type val) 'STR)  (atoi val))
     (T                    dflt)
   )
 )
 
 (defun sg:Str (val dflt)
-  (if (= (type val) 'STR) val dflt)
+  (if (eq (type val) 'STR) val dflt)
 )
 
 (defun sg:Trim (str)
@@ -125,8 +133,10 @@
     (progn
       (setq r (vl-catch-all-error-message r))
       (princ (strcat "\n** SheetGen failed during " label ": " r))
-      ;; the confirm dialog has no error tile, so this is allowed to fail too
+      ;; the command line is hidden behind a modal dialog, so say it out loud
       (vl-catch-all-apply 'set_tile (list "error" (strcat label ": " r)))
+      (alert (strcat "SheetGen hit an error during " label ":\n\n" r
+                     "\n\nThe dialog is still open - press Cancel to back out."))
       nil
     )
     r
@@ -668,7 +678,25 @@
         ))
 
   (if msg
-    (set_tile "error" msg)
+    ;; show it in the error tile and in a message box, so a rejected Next can
+    ;; never look like a dead button
+    (progn
+      (vl-catch-all-apply 'set_tile (list "error" msg))
+      (alert (strcat "SheetGen cannot continue:\n\n" msg "\n\n"
+                     "What the dialog read:\n"
+                     "  Mode: "            (sg:Str mode "?") "\n"
+                     "  Source layout: "   (sg:Str src "<none>") "\n"
+                     "  Source position: " (itoa srcpos)
+                     "   First new: "      (itoa firstpos) "\n"
+                     "  Columns: "         (itoa cols)
+                     "   Rows: "           (itoa rows)
+                     "   Last row: "       (itoa lastrow) "\n"
+                     "  Spacing H/V: "     (rtos hspace 2 4) " / " (rtos vspace 2 4) "\n"
+                     "  Total sheets: "    (itoa total) "\n"
+                     "  Parts: ["          *sg:p-parts* "]\n"
+                     "  Quantities: ["     *sg:p-qty*   "]\n"
+                     "  SD numbers: ["     *sg:p-sd*    "]"))
+    )
     (progn
       (setq *sg:cfg*
             (list (cons 'mode     mode)
