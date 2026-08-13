@@ -107,6 +107,8 @@
 ;;                   - The message now names the tiles that are actually missing, says the two files are                          ;;
 ;;                     a matched pair, and explains that a stale copy earlier on the support file search                          ;;
 ;;                     path will be found first                                                                                   ;;
+;;                   - The message now prints the full path of the sheetgen.dcl AutoCAD actually opened                           ;;
+;;                   - New SheetGenWhere command reports the loaded version and the dcl path and date                             ;;
 ;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
@@ -860,11 +862,14 @@
      (foreach k miss (setq p (strcat p (if (= p "") "" ", ") k)))
      (alert (strcat
        "SheetGen.lsp version " sheetgenversion " loaded an out of date sheetgen.dcl.\n\n"
-       "Missing from the dialog file:\n  " p "\n\n"
-       "SheetGen.lsp and sheetgen.dcl are a matched pair - update both together.\n\n"
-       "If you have already replaced it, AutoCAD is finding an older copy first.\n"
-       "OPTIONS > Files > Support File Search Path lists the folders it searches,\n"
-       "in order. Delete or overwrite any other sheetgen.dcl in those folders."))
+       "THIS is the file AutoCAD actually opened:\n\n  "
+       (sg:Str (findfile "sheetgen.dcl") "(not found on the search path)") "\n\n"
+       "Missing from it:\n  " p "\n\n"
+       "SheetGen.lsp and sheetgen.dcl are a matched pair and must be updated\n"
+       "together. Overwrite the file named above with the new sheetgen.dcl.\n\n"
+       "If that is not where you put the new one, AutoCAD found this copy first:\n"
+       "it searches the folders in OPTIONS > Files > Support File Search Path in\n"
+       "order and takes the first match, so delete the stale copy."))
      nil)
     (T
      (setq *sg:cfg* nil)
@@ -1152,6 +1157,24 @@
 ;;; Same dialog, opened straight into append mode
 (defun c:SheetGenAdd ()
   (sg:Run "mode_add")
+)
+
+;;; Reports which files are actually in play.  The two must be a matched pair,
+;;; and a stale sheetgen.dcl earlier on the search path is easy to miss.
+(defun c:SheetGenWhere (/ f d)
+  (princ (strcat "\nSheetGen.lsp version " sheetgenversion))
+  (setq f (findfile "sheetgen.dcl"))
+  (princ (strcat "\nsheetgen.dcl in use: "
+                 (if f f "NOT FOUND on the support file search path")))
+  ;; vl-file-systime -> (year month day-of-week day hours minutes seconds)
+  (if (and f (setq d (vl-file-systime f)))
+    (princ (strcat "\n  last written:      "
+                   (itoa (nth 1 d)) "/" (itoa (nth 3 d)) "/" (itoa (nth 0 d)) "  "
+                   (itoa (nth 4 d)) ":"
+                   (if (< (nth 5 d) 10) "0" "") (itoa (nth 5 d))))
+  )
+  (princ "\nIf that is not the file you just saved, AutoCAD found an older copy first.")
+  (princ)
 )
 
 ;;; Kept so old menu macros and scripts still work
