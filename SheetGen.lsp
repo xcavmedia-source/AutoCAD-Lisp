@@ -182,11 +182,21 @@
 ;;                   - The run reports how many views it positioned, so sheets left on the source view                            ;;
 ;;                     cannot pass as success                                                                                     ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.15: Stopped the zoom rescaling the sheets                                                                        ;;
+;;                   - ZOOM Center was given the view height read from DXF group 45. That number does not                         ;;
+;;                     mean what the prompt wants, so the first sheet was rescaled (69.77 -> 11.18 on the                         ;;
+;;                     reported run) and every copy inherited the wrong scale. The sheets moved to the                            ;;
+;;                     right coordinates but showed the wrong thing                                                               ;;
+;;                   - The height prompt now takes its default, which is the height the viewport already                          ;;
+;;                     has, so re-centring cannot change the scale                                                                ;;
+;;                   - After each zoom the viewport is read back. A view centre that is not where it was                          ;;
+;;                     aimed, or a view height that moved at all, is reported per sheet                                           ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.14")
+(setq sheetgenversion "1.15")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -525,6 +535,27 @@
   best
 )
 
+;;; Read viewport E back after a zoom and report anything that did not come out
+;;; as intended: a view centre somewhere other than TGT, or a view height that
+;;; moved off WASH.  A wrong scale is what makes a correctly placed sheet still
+;;; show the wrong thing, and it is invisible from the coordinates alone.
+(defun sg:CheckView (e tgt wash / ed got h2)
+  (setq ed  (entget e)
+        got (cdr (assoc 12 ed))
+        h2  (sg:Num (cdr (assoc 45 ed)) nil))
+  (if (and got
+           (> (distance (list (car tgt) (cadr tgt))
+                        (list (car got) (cadr got)))
+              0.01))
+    (princ (strcat "\n   ** landed on " (rtos (car got) 2 2) "," (rtos (cadr got) 2 2)
+                   " rather than " (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
+  )
+  (if (and wash h2 (> (abs (- wash h2)) 0.01))
+    (princ (strcat "\n   ** view height changed " (rtos wash 2 2) " -> " (rtos h2 2 2)
+                   " - the sheet scale has moved"))
+  )
+)
+
 ;;; sg:SetView under a catch.  Positioning is absolute, so a sheet that cannot
 ;;; be positioned does not affect any other sheet - there is no reason to
 ;;; abandon the run over one.  The sheets still get built and named, and a view
@@ -613,12 +644,14 @@
          (if (= 1 (sg:Int (getvar "CVPORT") 1))
            (princ "\n   ** could not enter the viewport - view left alone")
            (progn
-             (if hgt
-               (command "_.ZOOM" "_C" "_non" tgt hgt)
-               (command "_.ZOOM" "_C" "_non" tgt "")
-             )
+             ;; Take the default at "magnification or height", which is the
+             ;; height the viewport already has.  Supplying a height read from
+             ;; DXF group 45 rescaled the view instead of preserving it, and
+             ;; every copy then inherited the wrong scale.
+             (command "_.ZOOM" "_C" "_non" tgt "")
              (sg:ClearCmd)
              (setq ok T)
+             (sg:CheckView e tgt hgt)
            )
          )
          (command "_.PSPACE")
