@@ -112,7 +112,9 @@ sheetgen_page1 : dialog {
   : errtile { width = 70; }
 
   : row {
-    : button { key = "accept"; label = "Next >"; is_default = true; }
+    // NOTE: do not key this "accept". That is a reserved DCL key whose
+    // built in action closes the dialog before the action expression runs.
+    : button { key = "next"; label = "Next >"; is_default = true; }
     : button { key = "cancel"; label = "Cancel"; is_cancel = true; }
   }
 }

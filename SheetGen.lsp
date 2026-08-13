@@ -60,19 +60,77 @@
 ;;                   - (exit) calls inside dialog callbacks replaced with proper dialog flow                                      ;;
 ;;                   - Whole run wrapped in a single UNDO group with an error handler                                             ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.2: Fixed "bad argument type: fixnump: nil" raised by the Next button                                            ;;
+;;                   - The Next and OK buttons were keyed "accept", a reserved DCL key. Its built in action                       ;;
+;;                     closes the dialog by itself, so the action expression never ran and the dialog                             ;;
+;;                     reported success with nothing collected. Renamed to "next" and "okbtn"                                     ;;
+;;                   - The dialog result is now trusted only when the configuration really came back                              ;;
+;;                   - Mode is read from the radio buttons rather than from the radio_column value                                ;;
+;;                   - Every integer taken from a tile, the drawing dictionary or a config list goes through                      ;;
+;;                     a coercion helper, so nil can no longer reach itoa, nth, setvar or entmake                                 ;;
+;;                   - Viewport lookup no longer assumes DXF group 69 is present                                                  ;;
+;;                   - Dialog callbacks run under a catch, and any error names the step it happened in                            ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.1")
+(setq sheetgenversion "1.2")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
 ;;;                                      String Utilities                                          ;;
 ;;;-----------------------------------------------------------------------------------------------;;
 
+;;; Coerce to an integer, falling back to DFLT.  Anything handed to itoa, nth,
+;;; setvar or entmake goes through here so a nil can never reach them.
+(defun sg:Int (val dflt)
+  (cond
+    ((= (type val) 'INT)  val)
+    ((= (type val) 'REAL) (fix val))
+    ((= (type val) 'STR)  (atoi val))
+    (T                    dflt)
+  )
+)
+
+(defun sg:Str (val dflt)
+  (if (= (type val) 'STR) val dflt)
+)
+
 (defun sg:Trim (str)
-  (vl-string-trim " \t\r\n" str)
+  (vl-string-trim " \t\r\n" (sg:Str str ""))
+)
+
+;;; Index of ITEM in LST, or nil.  Avoids relying on vl-position.
+(defun sg:Index (item lst / i n)
+  (setq i 0 n nil)
+  (while (and lst (null n))
+    (if (equal item (car lst)) (setq n i))
+    (setq lst (cdr lst)
+          i   (1+ i))
+  )
+  n
+)
+
+(defun sg:Last (lst)
+  (if lst (nth (1- (length lst)) lst))
+)
+
+;;; Run a dialog callback under a catch, so a failure inside it reports what
+;;; actually went wrong instead of tearing the dialog down with a bare message.
+(defun sg:Guard (label fn / r)
+  (setq *sg:step* label)
+  (setq r (vl-catch-all-apply fn nil))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (setq r (vl-catch-all-error-message r))
+      (princ (strcat "\n** SheetGen failed during " label ": " r))
+      ;; the confirm dialog has no error tile, so this is allowed to fail too
+      (vl-catch-all-apply 'set_tile (list "error" (strcat label ": " r)))
+      nil
+    )
+    r
+  )
 )
 
 ;;; Split STR on spaces and tabs, discarding empty tokens.
@@ -276,9 +334,10 @@
     (progn
       (setq i 0)
       (while (and (not id) (< i (sslength ss)))
-        (setq e (entget (ssname ss i)))
-        (if (/= 1 (cdr (assoc 69 e)))
-          (setq id (cdr (assoc 69 e)))
+        (setq e (assoc 69 (entget (ssname ss i))))
+        ;; a viewport with no ID, or the paper space viewport (1), is not usable
+        (if (and e (/= 1 (cdr e)))
+          (setq id (cdr e))
         )
         (setq i (1+ i))
       )
@@ -452,7 +511,9 @@
           "  }\n"
           "  spacer;\n"
           "  : row {\n"
-          "    : button { key = \"accept\"; label = \"OK\"; is_default = true; }\n"
+          ;; not keyed "accept" - that is a reserved DCL key whose built in
+          ;; action closes the dialog before the action expression can run
+          "    : button { key = \"okbtn\"; label = \"OK\"; is_default = true; }\n"
           "    : button { key = \"back\"; label = \"< Back\"; is_cancel = true; }\n"
           "  }\n"
           "}\n")
@@ -482,15 +543,18 @@
           )
           (progn
             (setq *sg:count* (length names)
+                  *sg:names* nil
                   i          0)
             (foreach n names
               (set_tile (strcat "name" (itoa i)) n)
               (setq i (1+ i))
             )
-            (action_tile "accept" "(progn (sg:GrabNames) (done_dialog 1))")
-            (action_tile "back"   "(done_dialog 0)")
+            (action_tile "okbtn" "(progn (sg:Guard \"OK button\" 'sg:GrabNames) (done_dialog 1))")
+            (action_tile "back"  "(done_dialog 0)")
             (setq res (start_dialog))
             (unload_dialog dcl-id)
+            ;; if the names were never collected, treat it as Back
+            (if (and (= res 1) (null *sg:names*)) (setq res 0))
           )
         )
       )
@@ -525,10 +589,11 @@
   (setq st (sg:StateRead))
   (if (= mode "mode_add")
     (progn
-      (setq src (last layouts))
+      (setq src (sg:Last layouts))
       ;; The state record knows the grid position of the last sheet generated.
       ;; A tab the user copied on to the end still shows that same position.
-      (setq idx (if (and st (cadddr st)) (cadddr st) (length layouts)))
+      (setq idx (sg:Int (nth 3 st) (length layouts)))
+      (if (< idx 1) (setq idx (length layouts)))
       (list src (itoa idx) (itoa (1+ idx)))
     )
     (progn
@@ -538,39 +603,48 @@
   )
 )
 
+;;; Which radio button is lit.  Read from the buttons themselves rather than the
+;;; radio_column, whose value is not reliably set by set_tile on a child button.
+(defun sg:ReadMode ()
+  (cond
+    ((= (sg:Str (get_tile "mode_add") "") "1") "mode_add")
+    ((= (sg:Str (get_tile "mode_new") "") "1") "mode_new")
+    (T (sg:Str *sg:p-mode* "mode_new"))
+  )
+)
+
 ;;; Push the defaults for the currently selected mode into the source tiles.
-(defun sg:ApplyModeDefaults (/ m d p)
-  (setq m (get_tile "modegrp")
-        d (sg:SrcDefaults m *sg:layouts*)
-        p (vl-position (car d) *sg:layouts*))
-  (set_tile "srclayout" (itoa (if p p 0)))
-  (set_tile "srcpos"    (cadr d))
-  (set_tile "firstpos"  (caddr d))
+(defun sg:ApplyModeDefaults (/ d p)
+  (setq d (sg:SrcDefaults (sg:ReadMode) *sg:layouts*)
+        p (sg:Index (car d) *sg:layouts*))
+  (set_tile "srclayout" (itoa (sg:Int p 0)))
+  (set_tile "srcpos"    (sg:Str (cadr d) "1"))
+  (set_tile "firstpos"  (sg:Str (caddr d) "1"))
 )
 
 ;;; Read and check every tile.  Only closes the dialog when the input is usable.
 (defun sg:Page1Accept (/ mode cols rows lastrow hspace vspace total
                          src srcpos firstpos reuse msg)
-  (setq *sg:p-mode*    (get_tile "modegrp")
-        *sg:p-cols*    (get_tile "cols")
-        *sg:p-rows*    (get_tile "rows")
-        *sg:p-lastrow* (get_tile "lastrow")
-        *sg:p-hspace*  (get_tile "hspace")
-        *sg:p-vspace*  (get_tile "vspace")
-        *sg:p-parts*   (get_tile "partnums")
-        *sg:p-qty*     (get_tile "quantities")
-        *sg:p-sd*      (get_tile "sdnums")
-        *sg:p-reuse*   (get_tile "reuse"))
+  (setq *sg:p-mode*    (sg:ReadMode)
+        *sg:p-cols*    (sg:Str (get_tile "cols")       "")
+        *sg:p-rows*    (sg:Str (get_tile "rows")       "")
+        *sg:p-lastrow* (sg:Str (get_tile "lastrow")    "")
+        *sg:p-hspace*  (sg:Str (get_tile "hspace")     "")
+        *sg:p-vspace*  (sg:Str (get_tile "vspace")     "")
+        *sg:p-parts*   (sg:Str (get_tile "partnums")   "")
+        *sg:p-qty*     (sg:Str (get_tile "quantities") "")
+        *sg:p-sd*      (sg:Str (get_tile "sdnums")     "")
+        *sg:p-reuse*   (sg:Str (get_tile "reuse")      "0"))
 
   (setq mode     *sg:p-mode*
-        cols     (atoi *sg:p-cols*)
-        rows     (atoi *sg:p-rows*)
-        lastrow  (if (= (sg:Trim *sg:p-lastrow*) "") (atoi *sg:p-cols*) (atoi *sg:p-lastrow*))
+        cols     (sg:Int *sg:p-cols* 0)
+        rows     (sg:Int *sg:p-rows* 0)
+        lastrow  (if (= (sg:Trim *sg:p-lastrow*) "") cols (sg:Int *sg:p-lastrow* 0))
         hspace   (atof *sg:p-hspace*)
         vspace   (atof *sg:p-vspace*)
-        src      (nth (atoi (get_tile "srclayout")) *sg:layouts*)
-        srcpos   (atoi (get_tile "srcpos"))
-        firstpos (atoi (get_tile "firstpos"))
+        src      (nth (sg:Int (get_tile "srclayout") 0) *sg:layouts*)
+        srcpos   (sg:Int (get_tile "srcpos")   0)
+        firstpos (sg:Int (get_tile "firstpos") 0)
         reuse    (= *sg:p-reuse* "1"))
 
   (setq total (+ (* (- rows 1) cols) lastrow))
@@ -629,13 +703,19 @@
      (alert "SheetGen: the sheetgen_page1 dialog could not be opened.")
      nil)
     (T
+     (setq *sg:cfg* nil)
      (if start-mode (setq *sg:p-mode* start-mode))
+     (if (not (member *sg:p-mode* '("mode_new" "mode_add")))
+       (setq *sg:p-mode* "mode_new")
+     )
 
      (start_list "srclayout")
      (foreach n *sg:layouts* (add_list n))
      (end_list)
 
+     ;; set the button and the group, so get_tile works either way round
      (set_tile *sg:p-mode* "1")
+     (vl-catch-all-apply 'set_tile (list "modegrp" *sg:p-mode*))
      (set_tile "cols"       *sg:p-cols*)
      (set_tile "rows"       *sg:p-rows*)
      (set_tile "lastrow"    *sg:p-lastrow*)
@@ -646,28 +726,30 @@
      (set_tile "sdnums"     *sg:p-sd*)
      (set_tile "reuse"      *sg:p-reuse*)
 
-     (if (and *sg:p-src* (setq p (vl-position *sg:p-src* *sg:layouts*)))
+     (if (and *sg:p-src* (setq p (sg:Index *sg:p-src* *sg:layouts*)))
        (progn
          (set_tile "srclayout" (itoa p))
-         (set_tile "srcpos"    *sg:p-srcpos*)
-         (set_tile "firstpos"  *sg:p-firstpos*)
+         (set_tile "srcpos"    (sg:Str *sg:p-srcpos*   "1"))
+         (set_tile "firstpos"  (sg:Str *sg:p-firstpos* "1"))
        )
        (sg:ApplyModeDefaults)
      )
 
-     (action_tile "modegrp"  "(sg:ApplyModeDefaults)")
-     (action_tile "accept"   "(sg:Page1Accept)")
-     (action_tile "cancel"   "(done_dialog 0)")
+     (action_tile "modegrp" "(sg:Guard \"mode change\" 'sg:ApplyModeDefaults)")
+     (action_tile "next"    "(sg:Guard \"Next button\" 'sg:Page1Accept)")
+     (action_tile "cancel"  "(done_dialog 0)")
 
      (setq res (start_dialog))
      (unload_dialog dcl-id)
 
-     (if (= res 1)
+     ;; res can come back as 1 without *sg:cfg* ever being filled in, so trust
+     ;; the config rather than the return code
+     (if (and (= res 1) *sg:cfg*)
        (progn
          ;; remember the source choice for the next run in this session
-         (setq *sg:p-src*      (cdr (assoc 'src *sg:cfg*))
-               *sg:p-srcpos*   (itoa (cdr (assoc 'srcpos *sg:cfg*)))
-               *sg:p-firstpos* (itoa (cdr (assoc 'firstpos *sg:cfg*))))
+         (setq *sg:p-src*      (sg:Str (cdr (assoc 'src *sg:cfg*)) nil)
+               *sg:p-srcpos*   (itoa (sg:Int (cdr (assoc 'srcpos   *sg:cfg*)) 1))
+               *sg:p-firstpos* (itoa (sg:Int (cdr (assoc 'firstpos *sg:cfg*)) 1)))
          *sg:cfg*
        )
        nil
@@ -699,16 +781,23 @@
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
                                 cur curpos i n tmp target ok made)
-  (setq cols     (cdr (assoc 'cols cfg))
+  (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
-        src      (cdr (assoc 'src cfg))
-        srcpos   (cdr (assoc 'srcpos cfg))
-        firstpos (cdr (assoc 'firstpos cfg))
+        src      (sg:Str (cdr (assoc 'src      cfg)) nil)
+        srcpos   (sg:Int (cdr (assoc 'srcpos   cfg)) 1)
+        firstpos (sg:Int (cdr (assoc 'firstpos cfg)) 1)
         reuse    (cdr (assoc 'reuse cfg))
         n        (length names)
         ok       T
         made     0)
+
+  (if (or (null src) (< cols 1) (null names))
+    (progn
+      (alert "SheetGen: the setup came back incomplete. Please run the command again.")
+      (setq n 0 ok nil)
+    )
+  )
 
   (setq *sg:olderr* *error*
         *error*     sg:err
@@ -804,10 +893,12 @@
 (defun sg:Main (start-mode / cfg total parts qty sds names existing problems idx done cr)
   (setq done nil)
   (while (not done)
+    (setq *sg:step* "setup dialog")
     (if (setq cfg (sg:Page1 start-mode))
       (progn
+        (setq *sg:step* "building sheet names")
         (setq start-mode nil                       ; only force the mode on the first pass
-              total      (cdr (assoc 'total cfg))
+              total      (sg:Int (cdr (assoc 'total cfg)) 0)
               parts      (sg:SeqList *sg:p-parts* total)
               qty        (sg:QtyList *sg:p-qty*   total)
               sds        (sg:SeqList *sg:p-sd*    total))
@@ -841,13 +932,16 @@
                             (vl-remove (cdr (assoc 'src cfg)) (sg:LayoutNames))
                             (sg:LayoutNames))))
 
+            (setq *sg:step* "confirm names dialog")
             (setq cr (sg:ShowConfirm names))
             (if (= cr 1)
               (progn
+                (setq *sg:step* "checking sheet names")
                 (setq names *sg:names*)
                 (if (setq problems (sg:ValidateNames names existing))
                   (sg:ReportProblems problems)
                   (progn
+                    (setq *sg:step* "creating layouts")
                     (sg:Generate cfg names)
                     (setq done T)
                   )
@@ -863,19 +957,38 @@
   (princ)
 )
 
+;;; Single entry point.  Anything that escapes is reported with the step it
+;;; happened in, rather than as a bare AutoCAD message.
+(defun sg:Run (mode / r)
+  (setq *sg:step* "startup")
+  (setq r (vl-catch-all-apply 'sg:Main (list mode)))
+  (if (vl-catch-all-error-p r)
+    (progn
+      (sg:ClearCmd)
+      (if *sg:undo-open*
+        (progn (command "_.UNDO" "_End") (setq *sg:undo-open* nil))
+      )
+      (if *sg:oldecho* (setvar "CMDECHO" *sg:oldecho*))
+      (princ (strcat "\n** SheetGen error during " (sg:Str *sg:step* "?") ": "
+                     (vl-catch-all-error-message r)))
+    )
+  )
+  (princ)
+)
+
 (defun c:SheetGen ()
-  (sg:Main nil)
+  (sg:Run nil)
 )
 
 ;;; Same dialog, opened straight into append mode
 (defun c:SheetGenAdd ()
-  (sg:Main "mode_add")
+  (sg:Run "mode_add")
 )
 
 ;;; Kept so old menu macros and scripts still work
 (defun c:CopyLayout ()
   (princ "\nCopyLayout is now part of SheetGen - starting SheetGen.")
-  (sg:Main nil)
+  (sg:Run nil)
 )
 
 
