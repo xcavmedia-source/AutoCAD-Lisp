@@ -91,14 +91,20 @@
 ;;                     position. They describe the physical model space grid, so a value retyped even                             ;;
 ;;                     slightly differently would have mis-panned every sheet in the new batch                                    ;;
 ;;                   - Each grid position box now reads out "= row R, col C" as you type, and a summary                           ;;
-;;                     line shows the first and last position the run will cover. A partial last row is                           ;;
-;;                     the one case the position cannot be inferred, so it can be read and corrected here                         ;;
+;;                     line shows the first and last position the run will cover                                                  ;;
+;;                                                                                                                                ;;
+;;   8/13/26 - v1.6: Confirmed the grid fills continuously                                                                        ;;
+;;                   - A batch that stops part way along a row is not a special case. The next batch                              ;;
+;;                     carries on at the next column of that same row, so the stored position + 1 is                              ;;
+;;                     always the right place to resume and never needs correcting by hand                                        ;;
+;;                   - Said so in the dialog, since the position boxes are otherwise easy to misread as                           ;;
+;;                     something you are expected to work out yourself                                                            ;;
 ;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.5")
+(setq sheetgenversion "1.6")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -374,7 +380,11 @@
   id
 )
 
-;;; Model space offset of grid position IDX (1 based, filling left to right, top to bottom).
+;;; Model space offset of grid position IDX.
+;;; Positions are 1 based and fill the grid continuously: row 1 left to right,
+;;; then row 2, and so on.  A batch that stops part way along a row is not a
+;;; special case - the next batch simply carries on at the next column.  With
+;;; 10 columns, position 28 is row 3 column 8 and position 29 is row 3 column 9.
 (defun sg:GridOffset (idx cols hspace vspace / n)
   (setq n (max 0 (1- idx)))
   (list (* (rem n cols) hspace)

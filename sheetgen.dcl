@@ -32,6 +32,12 @@ sheetgen_page1 : dialog {
     : text {
       label = "To add sheets: copy your last tab, then run this in Add mode with that tab as the source.";
     }
+    : text {
+      label = "Positions count straight through the grid - row 1 left to right, then row 2, and so on.";
+    }
+    : text {
+      label = "They are filled in from where the last run stopped, so normally you can leave them alone.";
+    }
 
     : row {
       : column {
