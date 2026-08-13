@@ -129,11 +129,20 @@
 ;;                   - The error handler re-locks as well, so a run that stops part way cannot leave                              ;;
 ;;                     viewports unlocked. The whole run including the lock changes is one UNDO step                              ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.10: Views are set directly instead of by running PAN                                                             ;;
+;;                   - Positioning used MSPACE / CVPORT / -PAN / PSPACE. Driving it with commands means                           ;;
+;;                     switching spaces and depending on which viewport AutoCAD treats as active, and                             ;;
+;;                     when that went wrong the pan did not fail - it landed on paper space or on another                         ;;
+;;                     layout, which moved the views in sheets that were already finished                                         ;;
+;;                   - The viewport's view centre (DXF group 12) is now edited directly. Nothing outside                          ;;
+;;                     the sheet being positioned can be touched, and no space switching is involved                              ;;
+;;                   - Each move prints "view A -> B (cols N) dx .. dy .." so a wrong grid step is visible                        ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.9")
+(setq sheetgenversion "1.10")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -409,13 +418,6 @@
   (reverse out)
 )
 
-;;; Viewport ID of the first real viewport in layout LNAME, else nil.
-(defun sg:VpId (lname / e)
-  (if (setq e (car (sg:Viewports lname)))
-    (sg:Int (cdr (assoc 69 (entget e))) nil)
-  )
-)
-
 ;;; T when viewport entity E has its display locked.
 (defun sg:VpLockedP (e / r)
   (setq r (vl-catch-all-apply 'vla-get-DisplayLocked
@@ -429,22 +431,7 @@
                             (if state :vlax-true :vlax-false)))
 )
 
-;;; A display locked viewport will not pan - the view simply stays put - so any
-;;; locked viewport has to be released before the sheet can be positioned.
-;;; Each one released is remembered by entity name, so exactly the same ones are
-;;; locked again at the end of the run and nothing else is disturbed.
-(defun sg:UnlockLayout (lname)
-  (foreach e (sg:Viewports lname)
-    (if (sg:VpLockedP e)
-      (progn
-        (sg:VpSetLock e nil)
-        (setq *sg:unlocked* (cons e *sg:unlocked*))
-      )
-    )
-  )
-)
-
-;;; Re-lock everything sg:UnlockLayout released.  Copies of a locked viewport
+;;; Re-lock everything sg:PanView released.  Copies of a locked viewport
 ;;; are themselves locked, so every new sheet gets released and re-locked too.
 (defun sg:RelockAll (/ n)
   (setq n (length *sg:unlocked*))
@@ -465,29 +452,47 @@
         0.0)
 )
 
-;;; Pan the viewport of layout LNAME from grid position FROMIDX to TOIDX.
-;;; Returns T if a viewport was found (or no pan was needed), nil otherwise.
-(defun sg:PanView (lname fromidx toidx cols hspace vspace / vid d)
+;;; Move the view inside layout LNAME's viewport from grid position FROMIDX to
+;;; TOIDX.  Returns T if a viewport was found (or no move was needed).
+;;;
+;;; This edits the viewport's view centre (DXF group 12) directly rather than
+;;; running MSPACE / CVPORT / -PAN / PSPACE.  Driving it with commands means
+;;; switching spaces and relying on which viewport AutoCAD considers active, and
+;;; when that goes wrong the pan does not fail - it silently lands on paper
+;;; space or on another layout's viewport.  Editing the entity cannot affect any
+;;; layout other than this one.
+(defun sg:PanView (lname fromidx toidx cols hspace vspace / d c ed ctr new done)
   (if (= fromidx toidx)
     T
     (progn
-      ;; PAN displacement moves the drawing, so it is the negative of the view move
+      ;; The view centre moves with the target, so this is target minus current
       (setq d (mapcar '-
-                      (sg:GridOffset fromidx cols hspace vspace)
-                      (sg:GridOffset toidx cols hspace vspace)))
-      (if (setq vid (sg:VpId lname))
-        (progn
-          (sg:UnlockLayout lname)          ; a locked viewport will not pan
-          (command "_.MSPACE")
-          (setvar "CVPORT" vid)
-          (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
-          (sg:ClearCmd)
-          (command "_.PSPACE")
-          (if (/= 1 (getvar "CVPORT")) (setvar "CVPORT" 1))
-          T
+                      (sg:GridOffset toidx   cols hspace vspace)
+                      (sg:GridOffset fromidx cols hspace vspace)))
+      (princ (strcat "\n   view " (itoa fromidx) " -> " (itoa toidx)
+                     "  (cols " (itoa cols) ")  dx " (rtos (car d) 2 2)
+                     "  dy " (rtos (cadr d) 2 2)))
+      (setq done nil)
+      (foreach e (sg:Viewports lname)
+        (setq ed (entget e))
+        (if (setq ctr (assoc 12 ed))
+          (progn
+            ;; entmod is refused on some releases while the display is locked
+            (if (sg:VpLockedP e)
+              (progn
+                (sg:VpSetLock e nil)
+                (setq *sg:unlocked* (cons e *sg:unlocked*))
+              )
+            )
+            (setq c   (cdr ctr)
+                  new (list (+ (car c) (car d)) (+ (cadr c) (cadr d))))
+            (if (caddr c) (setq new (append new (list (caddr c)))))
+            (entmod (subst (cons 12 new) ctr ed))
+            (setq done T)
+          )
         )
-        nil
       )
+      done
     )
   )
 )
