@@ -86,11 +86,19 @@
 ;;                   - If AutoCAD opens an older sheetgen.dcl that is missing the Mode and Source                                 ;;
 ;;                     Layout tiles, that is now detected and reported instead of failing obscurely                               ;;
 ;;                                                                                                                                ;;
+;;   8/13/26 - v1.5: Continuing a grid across batches                                                                             ;;
+;;                   - Appending now restores Columns and both spacings from the drawing, not just the                            ;;
+;;                     position. They describe the physical model space grid, so a value retyped even                             ;;
+;;                     slightly differently would have mis-panned every sheet in the new batch                                    ;;
+;;                   - Each grid position box now reads out "= row R, col C" as you type, and a summary                           ;;
+;;                     line shows the first and last position the run will cover. A partial last row is                           ;;
+;;                     the one case the position cannot be inferred, so it can be read and corrected here                         ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.4")
+(setq sheetgenversion "1.5")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -623,6 +631,39 @@
   )
 )
 
+;;; "= row 3, col 8" for a grid position, so an abstract sheet number can be
+;;; checked against where the part actually sits in model space.
+(defun sg:PosHint (pos cols / n)
+  (if (or (< pos 1) (< cols 1))
+    ""
+    (progn
+      (setq n (1- pos))
+      (strcat "= row " (itoa (1+ (/ n cols))) ", col " (itoa (1+ (rem n cols))))
+    )
+  )
+)
+
+;;; Refresh the two position readouts and the run summary.
+(defun sg:UpdateHints (/ c rows lastrow total first last)
+  (setq c       (sg:Int (get_tile "cols") 0)
+        rows    (sg:Int (get_tile "rows") 0)
+        lastrow (if (= (sg:Trim (get_tile "lastrow")) "") c (sg:Int (get_tile "lastrow") 0))
+        first   (sg:Int (get_tile "firstpos") 0))
+  (set_tile "srchint"   (sg:PosHint (sg:Int (get_tile "srcpos") 0) c))
+  (set_tile "firsthint" (sg:PosHint first c))
+  (if (and (> c 0) (> rows 0) (> lastrow 0) (> first 0))
+    (progn
+      (setq total (+ (* (- rows 1) c) lastrow)
+            last  (+ first total -1))
+      (set_tile "summary"
+                (strcat "This run: " (itoa total) " sheet(s), position "
+                        (itoa first) " (" (sg:PosHint first c) ") through "
+                        (itoa last)  " (" (sg:PosHint last  c) ")"))
+    )
+    (set_tile "summary" "")
+  )
+)
+
 ;;; T when KEY is a real tile in the dialog that is currently open.
 ;;; A missing key either errors or hands back a non string, both of which mean
 ;;; the loaded DCL is not the one this file expects.
@@ -645,12 +686,27 @@
 )
 
 ;;; Push the defaults for the currently selected mode into the source tiles.
-(defun sg:ApplyModeDefaults (/ d p)
+;;; When appending, the columns and spacing come back from the drawing as well:
+;;; they describe the physical model space grid, which does not change between
+;;; batches, and a value retyped even slightly differently would mis-pan every
+;;; sheet in the new batch.
+(defun sg:ApplyModeDefaults (/ d p st)
   (setq d (sg:SrcDefaults (sg:ReadMode) *sg:layouts*)
         p (sg:Index (car d) *sg:layouts*))
   (set_tile "srclayout" (itoa (sg:Int p 0)))
   (set_tile "srcpos"    (sg:Str (cadr d) "1"))
   (set_tile "firstpos"  (sg:Str (caddr d) "1"))
+
+  (if (and (= (sg:ReadMode) "mode_add") (setq st (sg:StateRead)))
+    (progn
+      (if (and (car st) (> (sg:Int (car st) 0) 0))
+        (set_tile "cols" (itoa (sg:Int (car st) 10)))
+      )
+      (if (cadr st)  (set_tile "hspace" (rtos (cadr st)  2 4)))
+      (if (caddr st) (set_tile "vspace" (rtos (caddr st) 2 4)))
+    )
+  )
+  (sg:UpdateHints)
 )
 
 ;;; Read and check every tile.  Only closes the dialog when the input is usable.
@@ -765,7 +821,9 @@
     ((not (and (sg:TileExists "srcpos")
                (sg:TileExists "firstpos")
                (sg:TileExists "srclayout")
-               (sg:TileExists "mode_new")))
+               (sg:TileExists "mode_new")
+               (sg:TileExists "srchint")
+               (sg:TileExists "summary")))
      (unload_dialog dcl-id)
      (alert (strcat
        "SheetGen: AutoCAD opened an older sheetgen.dcl.\n\n"
@@ -808,7 +866,12 @@
        (sg:ApplyModeDefaults)
      )
 
+     (sg:UpdateHints)
+
      (action_tile "modegrp" "(sg:Guard \"mode change\" 'sg:ApplyModeDefaults)")
+     (foreach k '("cols" "rows" "lastrow" "srcpos" "firstpos")
+       (action_tile k "(sg:Guard \"grid readout\" 'sg:UpdateHints)")
+     )
      (action_tile "next"    "(sg:Guard \"Next button\" 'sg:Page1Accept)")
      (action_tile "cancel"  "(done_dialog 0)")
 

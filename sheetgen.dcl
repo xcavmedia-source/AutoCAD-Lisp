@@ -41,10 +41,12 @@ sheetgen_page1 : dialog {
       : column {
         : text { label = "Grid position it shows now:"; }
         : edit_box { key = "srcpos"; width = 6; edit_limit = 6; }
+        : text { key = "srchint"; label = "= row 00, col 00"; width = 18; }
       }
       : column {
         : text { label = "Grid position of first new sheet:"; }
         : edit_box { key = "firstpos"; width = 6; edit_limit = 6; }
+        : text { key = "firsthint"; label = "= row 00, col 00"; width = 18; }
       }
     }
 
@@ -108,6 +110,12 @@ sheetgen_page1 : dialog {
   }
 
   spacer;
+
+  : text {
+    key = "summary";
+    label = "This run: 000 sheet(s), position 000 (= row 00, col 00) through 000 (= row 00, col 00)";
+    width = 80;
+  }
 
   : errtile { width = 70; }
 
