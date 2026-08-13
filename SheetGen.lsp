@@ -201,11 +201,21 @@
 ;;                     it self correcting: a sheet that starts off does not hand its error to the next                            ;;
 ;;                   - Both centres are printed per sheet, so what moved and where is on the record                               ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.17: Read a copied layout's view only after opening it                                                            ;;
+;;                   - The view centre was read before the layout was made current. A layout that has                             ;;
+;;                     just been copied has never been opened and its stored centre is not dependable                             ;;
+;;                     until it has been, so the displacement was measured from the wrong place. The                              ;;
+;;                     source sheet, already open, came out right while every copy after it did not                               ;;
+;;                   - The viewport is now read after MSPACE has opened the layout                                                ;;
+;;                   - Tab order is now set outright once the sheets are named. LAYOUT Copy does not                              ;;
+;;                     reliably place a copy immediately after the layout it was made from, which left                            ;;
+;;                     the odd sheet out of sequence in the tab bar                                                               ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.16")
+(setq sheetgenversion "1.17")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -509,6 +519,24 @@
                             (if state :vlax-true :vlax-false)))
 )
 
+;;; Put NAMELIST at the end of the tab bar, in the order given.  LAYOUT Copy
+;;; does not reliably place a copy immediately after the layout it came from,
+;;; so tab order is set outright rather than relying on where copies landed.
+(defun sg:OrderTabs (namelist / lays total base i)
+  (setq lays  (vla-get-Layouts (sg:Doc))
+        total (length (sg:LayoutNames))
+        base  (- total (length namelist))
+        i     0)
+  (if (>= base 0)
+    (foreach nm namelist
+      (setq i (1+ i))
+      (vl-catch-all-apply
+        '(lambda ()
+           (vla-put-TabOrder (vla-Item lays nm) (+ base i))))
+    )
+  )
+)
+
 ;;; Re-lock everything sg:PanView released.  Copies of a locked viewport
 ;;; are themselves locked, so every new sheet gets released and re-locked too.
 (defun sg:RelockAll (/ n)
@@ -610,60 +638,63 @@
 ;;; ended up being moved.
 (defun sg:SetView (lname pos basepos basectr cols hspace vspace / e ed vid hgt ctr tgt d ok)
   (setq ok nil)
-  (if (and basectr (setq e (sg:MainViewport lname)))
-    (progn
-      (setq ed  (entget e)
-            vid (sg:Int (cdr (assoc 69 ed)) nil)
-            hgt (sg:Num (cdr (assoc 45 ed)) nil)   ; only to confirm it is unchanged
-            ctr (cdr (assoc 12 ed))                ; where this viewport looks now
-            tgt (mapcar '+
-                        basectr
-                        (mapcar '-
-                                (sg:GridOffset pos     cols hspace vspace)
-                                (sg:GridOffset basepos cols hspace vspace))))
-      ;; Displacement from where the view actually is to where it belongs.
-      ;; Reading the current centre each time makes this self correcting: a
-      ;; sheet that started off does not pass its error on to the next.
-      ;; PAN moves the drawing, so it is the opposite of the view movement.
-      (setq d (list (- (car ctr) (car tgt))
-                    (- (cadr ctr) (cadr tgt))
-                    0.0))
-      (princ (strcat "\n   position " (itoa pos)
-                     ": " (rtos (car ctr) 2 2) "," (rtos (cadr ctr) 2 2)
-                     " -> "  (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
+  (cond
+    ((null basectr)
+     (princ "\n   ** no reference view - sheet left alone"))
+    ((null (sg:MainViewport lname))
+     (princ (strcat "\n   ** no viewport in \"" lname "\" - view left alone")))
+    (T
+     (setq tgt (mapcar '+
+                       basectr
+                       (mapcar '-
+                               (sg:GridOffset pos     cols hspace vspace)
+                               (sg:GridOffset basepos cols hspace vspace))))
+     (setvar "CTAB" lname)
+     (if (/= (strcase (getvar "CTAB")) (strcase lname))
+       (princ (strcat "\n   ** could not open layout \"" lname "\" - view left alone"))
+       (progn
+         ;; a display locked viewport will not pan
+         (setq e (sg:MainViewport lname))
+         (if (sg:VpLockedP e)
+           (progn
+             (sg:VpSetLock e nil)
+             (setq *sg:unlocked* (cons e *sg:unlocked*))
+           )
+         )
 
-      ;; ZOOM inside a display locked viewport zooms paper space instead
-      (if (sg:VpLockedP e)
-        (progn
-          (sg:VpSetLock e nil)
-          (setq *sg:unlocked* (cons e *sg:unlocked*))
-        )
-      )
-
-      (setvar "CTAB" lname)
-      (cond
-        ((/= (strcase (getvar "CTAB")) (strcase lname))
-         (princ (strcat "\n   ** could not make layout \"" lname "\" current - view left alone")))
-        ((null vid)
-         (princ "\n   ** viewport has no ID - view left alone"))
-        (T
-         ;; MSPACE is what crosses from paper space into a viewport - setting
-         ;; CVPORT alone does not do it.  MSPACE activates a viewport in this
-         ;; layout by itself, so CVPORT is only touched if it picked a different
-         ;; one, and that is done under a catch because an ID read before the
-         ;; layout was ever opened is not always still valid.
+         ;; MSPACE is what crosses from paper space into a viewport; setting
+         ;; CVPORT alone does not do it.  It also opens the layout properly.
          (command "_.MSPACE")
+
+         ;; Read the viewport only now.  A layout that has just been copied has
+         ;; never been opened, and its stored view centre is not dependable
+         ;; until it has been.  Reading it any earlier measured the displacement
+         ;; from the wrong place, which left every copied sheet mispositioned
+         ;; while the source sheet, already open, came out right.
+         (setq e   (sg:MainViewport lname)
+               ed  (entget e)
+               vid (sg:Int (cdr (assoc 69 ed)) nil)
+               hgt (sg:Num (cdr (assoc 45 ed)) nil)
+               ctr (cdr (assoc 12 ed)))
+
          (if (and vid (/= (sg:Int (getvar "CVPORT") 0) vid))
            (vl-catch-all-apply 'setvar (list "CVPORT" vid))
          )
-         ;; CVPORT 1 means we are still in paper space, so the zoom would move
-         ;; the sheet rather than the view inside the viewport
+
+         ;; CVPORT 1 means we are still in paper space, where a pan would move
+         ;; the sheet instead of the view inside the viewport
          (if (= 1 (sg:Int (getvar "CVPORT") 1))
            (princ "\n   ** could not enter the viewport - view left alone")
            (progn
-             ;; PAN, not ZOOM.  The viewport scale is already set by the sheet
-             ;; and nothing here should alter it; panning moves the view and
-             ;; cannot change the scale, whereas ZOOM takes a height and can.
+             ;; PAN, not ZOOM.  The sheet already carries its viewport scale and
+             ;; nothing here should alter it: panning moves the view and cannot
+             ;; change the scale, whereas ZOOM takes a height and can.
+             (setq d (list (- (car ctr) (car tgt))
+                           (- (cadr ctr) (cadr tgt))
+                           0.0))
+             (princ (strcat "\n   position " (itoa pos) ": "
+                            (rtos (car ctr) 2 2) "," (rtos (cadr ctr) 2 2) " -> "
+                            (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
              (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
              (sg:ClearCmd)
              (setq ok T)
@@ -672,10 +703,9 @@
          )
          (command "_.PSPACE")
          (if (/= 1 (sg:Int (getvar "CVPORT") 1)) (setvar "CVPORT" 1))
-        )
-      )
+       )
+     )
     )
-    (princ (strcat "\n   ** no viewport found in \"" lname "\" - view left alone"))
   )
   ok
 )
@@ -1379,7 +1409,7 @@
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
                                 cur curpos i n tmp target ok made relocked basectr basepos
-                                pending p r lastactual placed)
+                                pending p r lastactual placed finalnames)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1472,11 +1502,16 @@
        (princ (strcat "\n** Could not rename \"" (car p) "\" to \"" (cdr p)
                       "\"\n   AutoCAD said: " (sg:Str *sg:renameerr* "no reason given"))))
       ((/= r (cdr p))
-       (setq lastactual r)
+       (setq lastactual r
+             finalnames (append finalnames (list r)))
        (princ (strcat "\n** Stored as \"" r "\" rather than \"" (cdr p) "\"")))
-      (T (setq lastactual r))
+      (T (setq lastactual r
+               finalnames (append finalnames (list r))))
     )
   )
+
+  ;; Sit them at the end of the tab bar in grid order
+  (if finalnames (sg:OrderTabs finalnames))
 
   ;; Lock again exactly the viewports that were unlocked to allow panning
   (setq relocked (sg:RelockAll))
