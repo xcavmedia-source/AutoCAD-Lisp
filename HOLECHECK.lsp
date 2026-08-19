@@ -15,10 +15,23 @@
 ;;; carries a tolerance so rounding noise cannot fail a nominally
 ;;; correct pattern.
 ;;;
-;;; Every failing location is marked with a revision cloud drawn on
-;;; layer  H_HoleCheck  (red).  Failures that touch one another are
-;;; grouped, so a cluster of bad holes gets one cloud around it
-;;; instead of one cloud per pair.
+;;; HOW FAILURES ARE FLAGGED
+;;;   - every hole involved in a failure is turned red
+;;;   - one revision cloud is drawn around the whole panel, on layer
+;;;     H_HoleCheck (red), pointing the checker at the panel so they
+;;;     can go find the red holes inside it
+;;;
+;;; Panel outlines are optional.  Select them and only the panels
+;;; holding bad holes get clouded, so a sheet full of panels can be
+;;; checked in one run.  Skip them and one cloud is drawn around the
+;;; extents of the holes that were checked.
+;;;
+;;; PUTTING THE DRAWING BACK
+;;; Turning a hole red edits real geometry, so every hole this tool
+;;; recolours carries hidden XDATA holding the colour it had before.
+;;; HOLECHECK undoes the previous run before starting a new one, so
+;;; results never pile up and a fixed hole never stays red.  Use
+;;; HOLECHECKCLEAR to strip every mark before issuing the drawing.
 ;;;
 ;;; The entered settings are remembered.  On each run the tool shows
 ;;; the stored values and asks whether to Continue with them or to
@@ -26,10 +39,13 @@
 ;;; save / reopen) and in memory (so the next drawing opens with the
 ;;; last values used).
 ;;;
-;;; Command : HOLECHECK
+;;; Commands : HOLECHECK       run the check
+;;;            HOLECHECKCLEAR  remove every mark the check left
 ;;;
 ;;; Notes : distances are measured in plan (WCS XY); Z is ignored.
 ;;;         values are reported in decimal drawing units, 4 places.
+;;;         a hole on a locked layer cannot be recoloured; the report
+;;;         says how many were skipped for that reason.
 ;;;
 ;;; Requirements : AutoCAD 2000+ with Visual LISP / ActiveX support
 ;;; ============================================================
@@ -41,6 +57,7 @@
 
 (setq *hc:layer* "H_HoleCheck")   ; layer the revision clouds go on
 (setq *hc:color* 1)               ; 1 = red
+(setq *hc:app*   "H_HOLECHECK")   ; XDATA application name
 
 ;;; Remembered settings - deliberately NOT reset when this file is
 ;;; reloaded:
@@ -72,6 +89,11 @@
     (setq i (1+ i))
   )
   arr
+)
+
+;;; Every entity of the current space carrying filter FLT, or nil
+(defun hc:ss-here (flt)
+  (ssget "_X" (append flt (list (cons 410 (getvar "CTAB")))))
 )
 
 
@@ -193,7 +215,108 @@
 )
 
 
-;;; ---- selection -------------------------------------------------
+;;; ---- recolouring the failing holes ------------------------------
+;;; The colour a hole had before is kept in XDATA on the hole itself,
+;;; so the change can always be undone - including after the drawing
+;;; has been saved, closed and reopened.
+
+;;; Turn ENT red, remembering what it looked like.  T when it worked,
+;;; nil when the hole could not be edited (a locked layer, usually).
+(defun hc:mark-red (ent / ed aci tc res)
+  (setq ed (entget ent (list *hc:app*)))
+  (if (null (assoc -3 ed))              ; not already marked
+    (progn
+      (setq aci (cdr (assoc 62 ed))
+            tc  (cdr (assoc 420 ed)))
+      (setq res (vl-catch-all-apply
+                  'entmod
+                  (list (append ed
+                                (list (list -3
+                                            (list *hc:app*
+                                                  (cons 1070 (if aci aci 256))
+                                                  ;; -1 = there was no
+                                                  ;; true-colour override
+                                                  (cons 1071 (if tc tc -1)))))))))
+      (if (or (vl-catch-all-error-p res) (null res)) (setq res nil) (setq res T))
+    )
+    (setq res T)
+  )
+  ;; vla-put-color also clears any true-colour override, which an
+  ;; edit of DXF group 62 on its own would not
+  (if res
+    (setq res (not (vl-catch-all-error-p
+                     (vl-catch-all-apply
+                       'vla-put-color
+                       (list (vlax-ename->vla-object ent) *hc:color*)))))
+  )
+  res
+)
+
+;;; Put ENT back the way it was and drop the XDATA.  T when the
+;;; entity carried a mark, nil when there was nothing to undo.
+(defun hc:unmark (ent / ed xd lst aci tc)
+  (setq ed (entget ent (list *hc:app*))
+        xd (cdr (assoc -3 ed)))
+  (if xd
+    (progn
+      (setq lst (cdr (assoc *hc:app* xd))
+            aci (cdr (assoc 1070 lst))
+            tc  (cdr (assoc 1071 lst)))
+      (vl-catch-all-apply 'vla-put-color
+                          (list (vlax-ename->vla-object ent)
+                                (if aci aci 256)))
+      ;; hand back a true-colour override if the hole had one
+      (if (and tc (>= tc 0))
+        (vl-catch-all-apply 'entmod
+                            (list (append (entget ent) (list (cons 420 tc)))))
+      )
+      ;; an application entry with no data behind it deletes the XDATA
+      (setq ed (entget ent (list *hc:app*)))
+      (vl-catch-all-apply 'entmod
+                          (list (subst (list -3 (list *hc:app*))
+                                       (assoc -3 ed)
+                                       ed)))
+      T
+    )
+    nil
+  )
+)
+
+;;; Undo everything an earlier run left behind: holes back to their
+;;; own colour, clouds erased.  Returns (holes . clouds).
+(defun hc:clear-all (/ ss i n nhole ncloud)
+  (setq nhole 0 ncloud 0)
+  (if (setq ss (hc:ss-here (list (list -3 (list *hc:app*)))))
+    (progn
+      (setq i 0 n (sslength ss))
+      (while (< i n)
+        (if (hc:unmark (ssname ss i)) (setq nhole (1+ nhole)))
+        (setq i (1+ i))
+      )
+    )
+  )
+  (if (tblsearch "LAYER" *hc:layer*)
+    (progn
+      (hc:ensure-layer)                 ; unlock it first or ENTDEL fails
+      (if (setq ss (hc:ss-here (list (cons 8 *hc:layer*))))
+        (progn
+          (setq i 0 n (sslength ss))
+          (while (< i n)
+            (if (not (vl-catch-all-error-p
+                       (vl-catch-all-apply 'entdel (list (ssname ss i)))))
+              (setq ncloud (1+ ncloud))
+            )
+            (setq i (1+ i))
+          )
+        )
+      )
+    )
+  )
+  (cons nhole ncloud)
+)
+
+
+;;; ---- selection --------------------------------------------------
 
 ;;; Drop circles sitting on a frozen or switched-off layer.  Only
 ;;; needed on the "check everything" path - a normal pick never
@@ -259,86 +382,162 @@
 )
 
 
-;;; ---- disjoint sets ---------------------------------------------
-;;; Used to gather failures that share a hole into one group, so a
-;;; run of bad holes is clouded once rather than once per pair.
+;;; ---- panel outlines ---------------------------------------------
 
-(defun hc:uf-make (n / arr i)
-  (setq arr (vlax-make-safearray vlax-vbLong (cons 0 (1- n)))
-        i   0)
+;;; Panel record: (xmin ymin xmax ymax outline ename seq).  OUTLINE is
+;;; the WCS vertex list of an LWPOLYLINE, or nil for anything else -
+;;; those fall back to their bounding box.
+(defun hc:panels (ss / i n ent ed typ nrm elev pts obj mn mx seq lst)
+  (setq i 0 n (sslength ss) seq 0 lst '())
   (while (< i n)
-    (vlax-safearray-put-element arr i i)
+    (setq ent  (ssname ss i)
+          ed   (entget ent)
+          typ  (cdr (assoc 0 ed))
+          pts  nil)
+    (if (= typ "LWPOLYLINE")
+      (progn
+        (setq nrm  (cdr (assoc 210 ed))
+              elev (cdr (assoc 38 ed)))
+        (if (null nrm)  (setq nrm '(0.0 0.0 1.0)))
+        (if (null elev) (setq elev 0.0))
+        (foreach g ed
+          (if (= 10 (car g))
+            (setq pts (cons (trans (list (car (cdr g)) (cadr (cdr g)) elev)
+                                   nrm 0)
+                            pts))
+          )
+        )
+        (setq pts (reverse pts))
+        (if (< (length pts) 3) (setq pts nil))
+      )
+    )
+    ;; AutoCAD's own bounding box - works whatever the entity is
+    (setq obj (vlax-ename->vla-object ent))
+    (if (not (vl-catch-all-error-p
+               (vl-catch-all-apply 'vla-getboundingbox (list obj 'mn 'mx))))
+      (progn
+        (setq mn (vlax-safearray->list mn)
+              mx (vlax-safearray->list mx))
+        (setq lst (cons (list (car mn) (cadr mn) (car mx) (cadr mx) pts ent seq)
+                        lst)
+              seq (1+ seq))
+      )
+    )
     (setq i (1+ i))
   )
-  arr
-)
-
-(defun hc:uf-find (arr i / r p)
-  (setq r i)
-  (while (/= r (vlax-safearray-get-element arr r))
-    (setq r (vlax-safearray-get-element arr r))
+  ;; smallest first, so a panel nested inside another one wins the test
+  (vl-sort lst
+           '(lambda (a b / aa ba)
+              (setq aa (* (- (caddr a) (car a)) (- (cadddr a) (cadr a)))
+                    ba (* (- (caddr b) (car b)) (- (cadddr b) (cadr b))))
+              (if (= aa ba)
+                (< (nth 6 a) (nth 6 b))
+                (< aa ba)
+              )
+            )
   )
-  (while (/= i r)                       ; path compression
-    (setq p (vlax-safearray-get-element arr i))
-    (vlax-safearray-put-element arr i r)
-    (setq i p)
+)
+
+;;; Crossing-number test: T when PX,PY lies inside closed polygon PTS
+(defun hc:inside-p (px py pts / a ax ay bx by in)
+  (setq in nil
+        a  (last pts))
+  (foreach b pts
+    (setq ax (car a) ay (cadr a)
+          bx (car b) by (cadr b))
+    ;; only edges that straddle the test line can be crossed, which
+    ;; also rules out the horizontal edges that would divide by zero
+    (if (or (and (<= ay py) (> by py))
+            (and (<= by py) (> ay py)))
+      (if (< px (+ ax (/ (* (- bx ax) (- py ay)) (- by ay))))
+        (setq in (not in))
+      )
+    )
+    (setq a b)
   )
-  r
+  in
 )
 
-(defun hc:uf-union (arr a b / ra rb)
-  (setq ra (hc:uf-find arr a)
-        rb (hc:uf-find arr b))
-  (if (/= ra rb) (vlax-safearray-put-element arr ra rb))
-  rb
+;;; The first panel in PANELS that holds point PX,PY, or nil.  PANELS
+;;; arrives smallest first, so the tightest fit wins.
+(defun hc:panel-of (px py panels / hit pts)
+  (foreach p panels
+    (if (and (null hit)
+             (>= px (car p)) (<= px (caddr p))
+             (>= py (cadr p)) (<= py (cadddr p))
+             (or (null (setq pts (nth 4 p)))
+                 (hc:inside-p px py pts)))
+      (setq hit p)
+    )
+  )
+  hit
 )
 
 
-;;; ---- revision cloud --------------------------------------------
+;;; ---- revision cloud ---------------------------------------------
 
-;;; Draw a circular revision cloud of radius RAD around CTR as a
-;;; closed LWPOLYLINE of bulged segments.  Building the cloud from
-;;; DXF data instead of calling the REVCLOUD command keeps the result
-;;; identical on every AutoCAD release and leaves no command echo.
-;;; Vertices run counter-clockwise with a positive bulge, so every
-;;; arc bows outward and nothing inside RAD is ever covered up.
-;;; ARCLEN of 0 (or less) gives an automatic 12-arc cloud.
-(defun hc:cloud (ctr rad arclen / n i step ang data)
-  (setq n (if (> arclen 1.0e-9)
-            (fix (+ 0.5 (/ (* 2.0 pi rad) arclen)))
-            12))
-  (setq n    (max 6 (min 60 n))
-        step (/ (* 2.0 pi) n)
+;;; Points along one edge, spaced about ARCLEN apart.  The far end is
+;;; left out because the next edge starts there.
+(defun hc:edge-pts (px py qx qy arclen / len nseg i f lst)
+  (setq len  (distance (list px py) (list qx qy))
+        nseg (max 1 (fix (+ 0.5 (/ len arclen))))
         i    0
-        data '())
-  (while (< i n)
-    (setq ang  (* i step)
-          data (cons (cons 42 0.5)          ; bulge -> outward arc
-                     (cons (cons 10 (list (+ (car  ctr) (* rad (cos ang)))
-                                          (+ (cadr ctr) (* rad (sin ang)))))
-                           data))
-          i    (1+ i))
+        lst  '())
+  (while (< i nseg)
+    (setq f   (/ (float i) nseg)
+          lst (cons (list (+ px (* (- qx px) f))
+                          (+ py (* (- qy py) f)))
+                    lst)
+          i   (1+ i))
+  )
+  (reverse lst)
+)
+
+;;; Draw a rectangular revision cloud around the box X1 Y1 X2 Y2 as a
+;;; closed LWPOLYLINE of bulged segments.  Building the cloud from DXF
+;;; data instead of calling the REVCLOUD command keeps the result
+;;; identical on every AutoCAD release and leaves no command echo.
+;;; The corners run counter-clockwise with a positive bulge, so every
+;;; arc bows outward and the panel is never covered up.
+;;; ARCLEN of 0 (or less) sizes the arcs from the panel itself.
+(defun hc:cloud-rect (x1 y1 x2 y2 arclen / per pts data)
+  (setq per (* 2.0 (+ (- x2 x1) (- y2 y1))))
+  (if (<= arclen 1.0e-9) (setq arclen (/ per 48.0)))
+  ;; never let a tiny arc length turn a big panel into a vertex storm
+  (setq arclen (max arclen (/ per 400.0)))
+  (setq pts (append (hc:edge-pts x1 y1 x2 y1 arclen)    ; bottom, left to right
+                    (hc:edge-pts x2 y1 x2 y2 arclen)    ; right, up
+                    (hc:edge-pts x2 y2 x1 y2 arclen)    ; top, right to left
+                    (hc:edge-pts x1 y2 x1 y1 arclen)))  ; left, down
+  (setq data '())
+  (foreach p pts
+    (setq data (cons (cons 42 0.5)                      ; bulge -> outward arc
+                     (cons (cons 10 p) data)))
   )
   (entmakex (append (list '(0 . "LWPOLYLINE")
                           '(100 . "AcDbEntity")
                           (cons 8 *hc:layer*)
                           '(100 . "AcDbPolyline")
-                          (cons 90 n)
-                          '(70 . 1))       ; closed
+                          (cons 90 (length pts))
+                          '(70 . 1))                    ; closed
                     (reverse data)))
 )
 
+;;; Cloud the box X1 Y1 X2 Y2 after standing it off by PAD
+(defun hc:cloud-box (x1 y1 x2 y2 pad arclen)
+  (hc:cloud-rect (- x1 pad) (- y1 pad) (+ x2 pad) (+ y2 pad) arclen)
+)
 
-;;; ---- main command ----------------------------------------------
+
+;;; ---- main command -----------------------------------------------
 
 (defun c:HOLECHECK
     (/ *error*
-       doc undo ss circles n maxrad thick arclen
-       uf flags i j rest more ci cj xi yi ri xj yj rj
+       doc undo ss pss panels circles n maxrad thick arclen
+       flags i j rest more ci cj xi yi ri xj yj rj
        dx dy dist gap fuzz novl ntight worst
-       flagged clusters cl root f fx fy fr
-       xmin xmax ymin ymax cx cy brad pad rr
-       old nold kw ndrawn)
+       cleared nred nlock ent p key groups g
+       xmin ymin xmax ymax pad diag ndrawn nfree)
 
   ;;; Local error handler - closes the undo group on cancel / error
   (defun *error* (msg)
@@ -351,6 +550,7 @@
   )
 
   (setq doc (vla-get-activedocument (vlax-get-acad-object)))
+  (regapp *hc:app*)
 
   ;;; --- settings -------------------------------------------------
   (hc:settings)
@@ -363,7 +563,7 @@
 
   (if (null ss)
     (progn
-      (setq ss (ssget "_X" (list '(0 . "CIRCLE") (cons 410 (getvar "CTAB")))))
+      (setq ss (hc:ss-here '((0 . "CIRCLE"))))
       (if ss
         (progn
           (setq ss (hc:strip-hidden ss))
@@ -394,6 +594,11 @@
     )
   )
 
+  ;;; --- panel outlines (optional) --------------------------------
+  (princ "\nSelect panel outline(s) <ENTER = cloud the extents of the holes>: ")
+  (setq pss (ssget '((0 . "LWPOLYLINE,POLYLINE,INSERT,REGION,ELLIPSE,SPLINE"))))
+  (if pss (setq panels (hc:panels pss)))
+
   (princ (strcat "\nChecking " (itoa n) " circles against a minimum edge distance of "
                  (hc:fmt thick) " ..."))
 
@@ -406,8 +611,7 @@
     (if (> (caddr ci) maxrad) (setq maxrad (caddr ci)))
   )
 
-  (setq uf     (hc:uf-make n)
-        flags  (hc:zeros n)
+  (setq flags  (hc:zeros n)
         novl   0
         ntight 0
         worst  nil
@@ -449,7 +653,6 @@
               )
               (vlax-safearray-put-element flags i 1)
               (vlax-safearray-put-element flags j 1)
-              (hc:uf-union uf i j)
             )
           )
           (setq more (cdr more)
@@ -461,100 +664,76 @@
           i    (1+ i))
   )
 
-  ;;; --- gather the failing holes into groups ---------------------
-  (setq flagged '()
-        i       0
-        rest    circles)
+  ;;; --- from here on the drawing is modified ---------------------
+  (vla-startundomark doc)
+  (setq undo T)
+
+  ;;; Undo the previous run first, so a hole that has since been
+  ;;; fixed does not stay red and clouds do not pile up
+  (setq cleared (hc:clear-all))
+
+  ;;; --- turn the failing holes red -------------------------------
+  ;;; and sort them into the panel each one sits in
+  (setq nred   0
+        nlock  0
+        groups '()
+        i      0
+        rest   circles)
   (while rest
     (if (= 1 (vlax-safearray-get-element flags i))
-      ;; (group  x  y  radius  ename  seq)
-      (setq flagged (cons (cons (hc:uf-find uf i) (car rest)) flagged))
+      (progn
+        (setq ci  (car rest)
+              ent (nth 3 ci))
+        (if (hc:mark-red ent)
+          (setq nred (1+ nred))
+          (setq nlock (1+ nlock))
+        )
+        ;; group by panel; nil groups the holes no panel claimed
+        ;; "none" collects the holes that no selected outline claimed
+        (setq p   (if panels (hc:panel-of (car ci) (cadr ci) panels))
+              key (if p (nth 5 p) "none")
+              g   (assoc key groups))
+        (if g
+          (setq groups (subst (cons key (cons ci (cdr g))) g groups))
+          (setq groups (cons (cons key (list ci)) groups))
+        )
+      )
     )
     (setq rest (cdr rest)
           i    (1+ i))
   )
 
-  ;; sort by group, then by the unique sequence number, and walk the
-  ;; sorted list to split it into one list per group
-  (setq flagged (vl-sort flagged
-                         '(lambda (a b)
-                            (if (= (car a) (car b))
-                              (< (nth 5 a) (nth 5 b))
-                              (< (car a) (car b))
-                            )
-                          )))
-  (setq clusters '()
-        cl       '()
-        root     nil)
-  (foreach f flagged
-    (if (and root (/= (car f) root))
-      (setq clusters (cons cl clusters)
-            cl       '())
+  ;;; --- cloud the panels that failed -----------------------------
+  (setq ndrawn 0
+        nfree  0)
+  (if groups (hc:ensure-layer))
+  (foreach g groups
+    (setq key (car g)
+          p   nil)
+    (if (not (equal key "none"))
+      (foreach q panels (if (equal (nth 5 q) key) (setq p q)))
     )
-    (setq root (car f)
-          cl   (cons f cl))
-  )
-  (if cl (setq clusters (cons cl clusters)))
-
-  ;;; --- from here on the drawing is modified ---------------------
-  (vla-startundomark doc)
-  (setq undo T)
-
-  ;;; Clear the marks left by an earlier run so results never stack
-  (setq nold 0)
-  (if (tblsearch "LAYER" *hc:layer*)
-    (progn
-      (hc:ensure-layer)                 ; on / thawed / unlocked / red
-      (if (setq old (ssget "_X" (list (cons 8 *hc:layer*)
-                                      (cons 410 (getvar "CTAB")))))
-        (progn
-          (setq nold (sslength old))
-          (initget "Yes No")
-          (setq kw (getkword (strcat "\n" (itoa nold)
-                                     " mark(s) from an earlier check found on layer "
-                                     *hc:layer* " - erase them? [Yes/No] <Yes>: ")))
-          (if (= kw "No")
-            (setq nold 0)
-            (progn
-              (setq i 0)
-              (while (< i nold)
-                (entdel (ssname old i))
-                (setq i (1+ i))
-              )
-            )
+    (if p
+      ;; a real panel outline - cloud the whole panel
+      (setq xmin (car p) ymin (cadr p) xmax (caddr p) ymax (cadddr p))
+      ;; no outline claimed these holes - cloud what they cover
+      (progn
+        (setq nfree (1+ nfree)
+              xmin  nil)
+        (foreach ci (cdr g)
+          (setq xi (car ci) yi (cadr ci) ri (caddr ci))
+          (if (null xmin)
+            (setq xmin (- xi ri) xmax (+ xi ri)
+                  ymin (- yi ri) ymax (+ yi ri))
+            (setq xmin (min xmin (- xi ri)) xmax (max xmax (+ xi ri))
+                  ymin (min ymin (- yi ri)) ymax (max ymax (+ yi ri)))
           )
         )
       )
     )
-  )
-
-  ;;; --- cloud each failing group ---------------------------------
-  (setq ndrawn 0)
-  (if clusters (hc:ensure-layer))
-  (foreach cl clusters
-    ;; box that holds every circle in the group, edges included
-    (setq xmin nil)
-    (foreach f cl
-      (setq fx (cadr f)
-            fy (caddr f)
-            fr (nth 3 f))
-      (if (null xmin)
-        (setq xmin (- fx fr)
-              xmax (+ fx fr)
-              ymin (- fy fr)
-              ymax (+ fy fr))
-        (setq xmin (min xmin (- fx fr))
-              xmax (max xmax (+ fx fr))
-              ymin (min ymin (- fy fr))
-              ymax (max ymax (+ fy fr)))
-      )
-    )
-    (setq cx   (* 0.5 (+ xmin xmax))
-          cy   (* 0.5 (+ ymin ymax))
-          brad (* 0.5 (distance (list xmin ymin) (list xmax ymax)))
-          pad  (max (* 0.25 brad) thick)
-          rr   (+ brad pad))
-    (if (hc:cloud (list cx cy) rr arclen)
+    (setq diag (distance (list xmin ymin) (list xmax ymax))
+          pad  (max thick (* 0.02 diag)))
+    (if (hc:cloud-box xmin ymin xmax ymax pad arclen)
       (setq ndrawn (1+ ndrawn))
     )
   )
@@ -575,23 +754,67 @@
                    (if (< (car worst) 0.0) "  (overlap)" "")
                    "  at  " (hc:fmt (cadr worst)) "," (hc:fmt (caddr worst))))
   )
-  (if (> nold 0)
-    (princ (strcat "\n  " (hc:pad "Earlier marks erased " 28) " " (itoa nold)))
+  (if (or (> (car cleared) 0) (> (cdr cleared) 0))
+    (princ (strcat "\n  " (hc:pad "Marks cleared from last run " 28) " "
+                   (itoa (car cleared)) " hole(s), "
+                   (itoa (cdr cleared)) " cloud(s)"))
   )
-  (princ (strcat "\n  " (hc:pad "Revision clouds drawn " 28) " " (itoa ndrawn)))
+  (princ (strcat "\n  " (hc:pad "Holes turned red " 28) " " (itoa nred)))
+  (if (> nlock 0)
+    (princ (strcat "\n  " (hc:pad "Holes on a locked layer " 28) " "
+                   (itoa nlock) "  (not recoloured)"))
+  )
+  (princ (strcat "\n  " (hc:pad "Revision clouds drawn " 28) " " (itoa ndrawn)
+                 (cond
+                   ((null panels) "")
+                   ((> nfree 0)
+                    (strcat "  (" (itoa (- ndrawn nfree)) " of "
+                            (itoa (length panels))
+                            " panel(s), " (itoa nfree) " outside any panel)"))
+                   (T (strcat "  of " (itoa (length panels)) " panel(s)")))))
   (princ "\n------------------------------------------------------")
 
   (if (= 0 (+ novl ntight))
     (princ (strcat "\nPASS - every hole edge is at least " (hc:fmt thick)
                    " from its neighbours."))
     (princ (strcat "\nFAIL - " (itoa (+ novl ntight))
-                   " bad hole pair(s) clouded on layer " *hc:layer* "."))
+                   " bad hole pair(s).  Red holes inside the cloud(s) on layer "
+                   *hc:layer* "."))
   )
   (princ)
 )
 
 
-(princ "\nHOLECHECK.lsp loaded.  Type  HOLECHECK  to run.")
+;;; ---- clean-up command -------------------------------------------
+
+(defun c:HOLECHECKCLEAR (/ *error* doc undo cleared)
+
+  (defun *error* (msg)
+    (if undo (vl-catch-all-apply 'vla-endundomark (list doc)))
+    (if (not (member msg '("Function cancelled" "quit / exit abort"
+                           "console break")))
+      (princ (strcat "\n** HOLECHECKCLEAR Error: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-activedocument (vlax-get-acad-object)))
+  (regapp *hc:app*)
+  (vla-startundomark doc)
+  (setq undo T)
+
+  (setq cleared (hc:clear-all))
+
+  (vla-endundomark doc)
+  (setq undo nil)
+
+  (princ (strcat "\n" (itoa (car cleared)) " hole(s) put back to their own colour, "
+                 (itoa (cdr cleared)) " cloud(s) erased."))
+  (princ)
+)
+
+
+(princ "\nHOLECHECK.lsp loaded.  HOLECHECK to run, HOLECHECKCLEAR to remove the marks.")
 (princ)
 
 ;;; ============================================================ EOF
