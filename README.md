@@ -50,10 +50,10 @@ Deploy-CADHours.bat \\fileserver\Company\CADHours
 
 Start AutoCAD and open any drawing. `Deploy-CADHours.bat /u` removes it again.
 
-Then set `JobPattern` in `cadhours.ini` to your real job number format (e.g.
-`##-####`) — that one setting turns the pop-up from "type your job number" into
-"press Enter to confirm 24-1057", because it lets the tracker read the job out
-of the folder path.
+`JobPattern` is already set to `P#####` in `cadhours.ini`, so job numbers are
+validated on entry and read straight out of the folder path — the pop-up
+usually just needs Enter to confirm `P10432`. Change it there if the format
+ever moves.
 
 Full rollout notes, including all-users deployment and AutoCAD's security
 prompts: **[docs/deployment.md](docs/deployment.md)**.

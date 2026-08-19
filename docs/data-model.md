@@ -23,10 +23,10 @@ One row per drawing session. This is what every report reads.
 | 1 | `status` | `CLOSED` | `CLOSED`, `QUIT`, `STOPPED`, `SPLIT`, `RECOVERED`, `RUNNING` |
 | 2 | `user` | `JSMITH` | Windows account |
 | 3 | `machine` | `WS14` | |
-| 4 | `job` | `24-1057` | `UNASSIGNED` if the user has not answered yet |
+| 4 | `job` | `P10432` | `UNASSIGNED` if the user has not answered yet |
 | 5 | `task` | `Details` | Optional phase, from the pop-up |
 | 6 | `dwg_name` | `A-101` | |
-| 7 | `dwg_path` | `\\srv\Projects\24-1057\CAD\A-101.dwg` | Full path at the time of writing |
+| 7 | `dwg_path` | `\\srv\Projects\P10432\CAD\A-101.dwg` | Full path at the time of writing |
 | 8 | `start_local` | `2026-08-19 08:12:03` | Workstation local time |
 | 9 | `end_local` | `2026-08-19 11:47:55` | |
 | 10 | `date` | `2026-08-19` | Start date — what daily reports group on |
@@ -158,7 +158,7 @@ Then the three questions you asked about are one query each:
 
 ```sql
 -- total hours on a job
-SELECT SUM(active_sec)/3600.0 AS hours FROM cad_sessions WHERE job = '24-1057';
+SELECT SUM(active_sec)/3600.0 AS hours FROM cad_sessions WHERE job = 'P10432';
 
 -- daily hours per person
 SELECT [date], [user], SUM(active_sec)/3600.0 AS hours

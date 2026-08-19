@@ -98,24 +98,69 @@
 ;;; ---- reading a job number out of the folder path ----------------------
 ;;;
 ;;; Most offices already file drawings under a job folder such as
-;;; "P:\Projects\24-1057 Smith Residence\CAD".  When JobFromPath is on,
-;;; the first path component whose leading token matches JobPattern is
-;;; offered as the default, so the user usually just presses Enter.
+;;; "P:\Projects\P10432 Smith Residence\CAD".  When JobFromPath is on,
+;;; the first path component that contains something matching
+;;; JobPattern is offered as the default, so the user usually just
+;;; presses Enter.
 
-(defun ch:job-from-path (path pattern / parts token hit p)
+;;; First boundary-delimited piece of COMP that is a valid job number.
+;;;
+;;; A candidate has to start at the front of the component or just
+;;; after one of " -_.()[]", and end at the back or just before one.  That
+;;; is what lets "P10432-Smith", "P10432_Smith" and "P10432 Smith" all
+;;; give up P10432, while "P104321" gives up nothing - a job number has
+;;; to be a whole token, not a prefix of a longer one.
+;;;
+;;; Candidates are tried left to right, shortest first, so a pattern
+;;; that itself contains a separator (##-####) still matches P10432
+;;; rather than stopping at 24.
+(defun ch:job-in-token (comp / n seps i c starts ends st en cand hit)
+  (setq comp (ch:trim comp)
+        n    (strlen comp)
+        seps " -_.()[]")
+  (if (> n 0)
+    (progn
+      (setq i 1)
+      (while (<= i n)
+        (setq c (substr comp i 1))
+        (if (vl-string-search c seps)
+          (progn
+            (if (< i n) (setq starts (cons (1+ i) starts)))
+            (if (> i 1) (setq ends   (cons (1- i) ends)))
+          )
+        )
+        (setq i (1+ i))
+      )
+      (setq starts (cons 1 (reverse starts))
+            ends   (append (reverse ends) (list n)))
+      (foreach st starts
+        (if (null hit)
+          (foreach en ends
+            (if (and (null hit) (>= en st))
+              (progn
+                (setq cand (substr comp st (1+ (- en st))))
+                (if (ch:valid-job cand) (setq hit cand))
+              )
+            )
+          )
+        )
+      )
+      hit
+    )
+  )
+)
+
+;;; Walk the path from the root down and return the first job number
+;;; found.  Shallow-first, so the project folder wins over anything in
+;;; a sub-folder or the file name.
+(defun ch:job-from-path (path pattern / parts hit p)
   (if (and (ch:cfg-bool "JobFromPath" T)
            path (/= path "")
            (/= pattern "") (/= pattern "*"))
     (progn
       (setq parts (ch:split (ch:norm-path path) "\\"))
       (foreach p parts
-        (if (null hit)
-          (progn
-            (setq token (car (ch:split (ch:trim p) " ")))
-            (if (and token (/= token "") (ch:valid-job token))
-              (setq hit token))
-          )
-        )
+        (if (null hit) (setq hit (ch:job-in-token p)))
       )
       hit
     )

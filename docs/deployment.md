@@ -80,25 +80,47 @@ The settings worth thinking about before you roll out:
 | `LogRoot` | local folder | Point it at the share. Leave it local while testing. |
 | `IdleSeconds` | `300` | Your 5-minute rule. |
 | `IdleCreditSeconds` | `300` | How much of an idle gap is still billed. Equal to `IdleSeconds` = "keep billing until 5 minutes of silence have passed". `0` = bill nothing after the last action. |
-| `JobPattern` | `*` | Set this to your real job number format, e.g. `##-####`. It powers both validation and folder-name detection. |
-| `JobFromPath` | `1` | With `JobPattern` set, `P:\Projects\24-1057 Smith House\CAD\A-101.dwg` suggests `24-1057` on its own. Users mostly just press Enter. |
+| `JobPattern` | `P#####` | Your job number format. It powers both validation and folder-name detection. |
+| `JobFromPath` | `1` | `P:\Projects\P10432 Smith House\CAD\A-101.dwg` suggests `P10432` on its own. Users mostly just press Enter. |
 | `RequireJobNumber` | `1` | Keeps asking until a job is given. Time is banked as `UNASSIGNED` in the meantime, never lost. |
 | `MinSessionSeconds` | `10` | Stops "opened it to look at something" from filling the database. |
 
-### Set `JobPattern` first
+### `JobPattern` is already set to `P#####`
 
 It is the single setting that most improves the day-to-day experience, because
 it turns the pop-up from "type your job number" into "press Enter to confirm
-24-1057". Examples:
+P10432". `#` means one digit and `P` is a literal, so `P#####` accepts exactly
+`P` plus five digits. Matching ignores case, so a user typing `p10432` is
+accepted; the value is stored as they typed it.
 
 | Pattern | Matches |
 |---|---|
-| `##-####` | `24-1057` |
-| `####` | `1057` |
-| `[A-Z]####` | `J1057` |
-| `##-####*` | `24-1057`, `24-1057A` |
+| `P#####` | `P10432` — what is shipped |
+| `P####,P#####` | `P10432` **or** a legacy four-digit `P1043` (comma = alternatives) |
+| `P#####*` | `P10432` and revision suffixes like `P10432A` |
+| `*` | anything — also switches off validation and folder detection |
 
----
+### How the folder is read
+
+With the pattern set, the tracker walks the drawing's path from the root down
+and offers the first job number it finds. It has to be a **whole token** —
+bounded by the start or end of a folder name, or by a space, dash, underscore,
+dot or bracket. So all of these resolve to `P10432`:
+
+```
+P:\Projects\P10432 Smith Residence\CAD\A-101.dwg
+P:\Projects\P10432-Smith Residence\CAD\A-101.dwg
+P:\Projects\P10432_Smith\CAD\A-101.dwg
+P:\Projects\Smith Residence (P10432)\CAD\A-101.dwg
+P:\Projects\Smith Residence\CAD\P10432-A101.dwg      (falls back to the file name)
+```
+
+and `P:\Projects\P104321 Big Job\` correctly finds **nothing** rather than
+mistaking the first six characters for `P10432`.
+
+Shallow folders are searched first, so a project folder always wins over a
+sub-folder or the file name. If nothing is found the user is asked, and their
+answer is remembered against that drawing for next time.
 
 ## 4. Security prompts
 
