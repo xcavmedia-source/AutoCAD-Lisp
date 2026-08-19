@@ -41,6 +41,9 @@
 (defun ch:boot-home ( / cand hit f c)
   (setq cand
     (list
+      ;; set by whatever loaded us - this is how a line added to an
+      ;; existing acaddoc.lsp points at a folder on the server
+      *ch-home*
       (getenv "CADHOURS_HOME")
       (vl-registry-read "HKEY_CURRENT_USER\\Software\\CADHours" "Home")
       (strcat (ch:boot-env "APPDATA")

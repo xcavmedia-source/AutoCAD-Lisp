@@ -55,6 +55,10 @@ validated on entry and read straight out of the folder path — the pop-up
 usually just needs Enter to confirm `P10432`. Change it there if the format
 ever moves.
 
+Rolling out to several PCs by hand instead — one copy of the tracker on a
+server, a few lines added to the `acaddoc.lsp` each PC already uses, everyone
+logging to the same folder: **[docs/manual-install.md](docs/manual-install.md)**.
+
 Full rollout notes, including all-users deployment and AutoCAD's security
 prompts: **[docs/deployment.md](docs/deployment.md)**.
 
@@ -137,8 +141,9 @@ web\      dashboard-template.html  the dashboard's markup, CSS and JS
 install\  Deploy-CADHours.bat      one-command install / uninstall
           cadhours.ini             settings, fully commented
           CADHours.bundle\         AutoCAD AutoLoader manifest
-          acaddoc.lsp              alternative loader for network deployment
+          acaddoc.lsp              paste-in block for a manual network rollout
 docs\     language-choice.md       why AutoLISP, and when to switch to .NET
+          manual-install.md        multi-PC rollout via each PC's acaddoc.lsp
           deployment.md            rollout, security prompts, enforcement
           data-model.md            schema, recovery, SQL and Excel
 ```

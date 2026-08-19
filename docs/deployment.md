@@ -58,12 +58,19 @@ That location needs admin rights once, and then covers every user of that
 machine. Push it with a login script, GPO, SCCM/Intune, or whatever already
 puts files on your workstations — it is a plain folder copy.
 
-### Without the bundle
+### By hand, from a network folder
 
-If you would rather load it from a network folder the old way, use
-`install\acaddoc.lsp`. Put the tracker's files on a share, add that folder to
-**Options ▸ Files ▸ Support File Search Path** *and* **Trusted Locations**, and
-put `acaddoc.lsp` beside them. AutoCAD runs `acaddoc.lsp` once per drawing.
+If you would rather keep one copy of the tracker on a server and add a few
+lines to the `acaddoc.lsp` each PC already uses, that is fully supported and
+has its own step-by-step walkthrough:
+
+**[manual-install.md](manual-install.md)** — server setup once, then about five
+minutes per workstation, with a printable checklist and a troubleshooting
+table.
+
+That route has a real advantage over the bundle: the tracker and its settings
+live in one folder on the server, so updating it later is a single copy there
+rather than a visit to every PC.
 
 ---
 
