@@ -41,12 +41,23 @@
 ;;; checked in one run.  Skip them and one cloud is drawn around the
 ;;; extents of the holes that were checked.
 ;;;
+;;; WORKING THROUGH A SHEET
+;;; The command stays open after each verdict, so panels are picked
+;;; one after another until you choose eXit.  Marks build up as you
+;;; go: checking a panel never disturbs the panels checked before it.
+;;; Only the area just looked at is cleared and remarked, so a panel
+;;; checked again after a fix loses its own stale marks and nothing
+;;; else.  Work the whole sheet, fix what is flagged, then run
+;;; HOLECHECKCLEAR once to strip every mark in one go.
+;;;
 ;;; PUTTING THE DRAWING BACK
 ;;; Turning a hole red edits real geometry, so every hole this tool
 ;;; recolours carries hidden XDATA holding the colour it had before.
-;;; HOLECHECK undoes the previous run before starting a new one, so
-;;; results never pile up and a fixed hole never stays red.  Use
-;;; HOLECHECKCLEAR to strip every mark before issuing the drawing.
+;;; Nothing ever changes layer - a recoloured hole stays on its own
+;;; layer and only its colour override is touched, so HOLECHECKCLEAR
+;;; puts every hole back on the layer and in the colour it started
+;;; with.  Clouds and rings are the only things on H_HoleCheck, and
+;;; they are erased outright.
 ;;;
 ;;; The entered settings are remembered.  On each run the tool shows
 ;;; the stored values and asks whether to Continue with them or to
@@ -54,7 +65,7 @@
 ;;; save / reopen) and in memory (so the next drawing opens with the
 ;;; last values used).
 ;;;
-;;; Commands : HOLECHECK       run the check
+;;; Commands : HOLECHECK       check panels, one after another
 ;;;            HOLECHECKCLEAR  remove every mark the check left
 ;;;
 ;;; Notes : the verdict is shown in a dialog as well as on the command
@@ -742,66 +753,87 @@
 )
 
 
-;;; ---- main command -----------------------------------------------
+;;; ---- scoped clean-up --------------------------------------------
 
-(defun c:HOLECHECK
-    (/ *error*
-       doc undo ss pss panels circles n maxrad thick arclen
-       flags i j rest more ci cj xi yi ri xj yj rj
-       dx dy dist gap fuzz novl ntight worst
-       cleared nred nring nlock nblk nonuni nins ninsused ent p key groups g
-       xmin ymin xmax ymax pad diag ndrawn nfree msg)
-
-  ;;; Local error handler - closes the undo group on cancel / error
-  (defun *error* (msg)
-    (if undo (vl-catch-all-apply 'vla-endundomark (list doc)))
-    (if (not (member msg '("Function cancelled" "quit / exit abort"
-                           "console break")))
-      (princ (strcat "\n** HOLECHECK Error: " msg))
-    )
-    (princ)
-  )
-
-  (setq doc (vla-get-activedocument (vlax-get-acad-object)))
-  (regapp *hc:app*)
-  (setq *hc:vcache* nil)                ; layer visibility is cached per run
-
-  ;;; --- settings -------------------------------------------------
-  (hc:settings)
-  (setq thick  *hc:thick*
-        arclen (if *hc:arclen* *hc:arclen* 0.0))
-
-  ;;; --- selection ------------------------------------------------
-  (princ "\nSelect circles and/or blocks to check <ENTER = everything in the current space>: ")
-  (setq ss (ssget '((0 . "CIRCLE,INSERT"))))
-
-  (if (null ss)
+;;; Centre of an entity's bounding box, or nil when AutoCAD will not
+;;; give one out.
+(defun hc:ent-centre (ent / obj mn mx)
+  (setq obj (vlax-ename->vla-object ent))
+  (if (not (vl-catch-all-error-p
+             (vl-catch-all-apply 'vla-getboundingbox (list obj 'mn 'mx))))
     (progn
-      (setq ss (hc:ss-here '((0 . "CIRCLE,INSERT"))))
-      (if ss
+      (setq mn (vlax-safearray->list mn)
+            mx (vlax-safearray->list mx))
+      (list (* 0.5 (+ (car  mn) (car  mx)))
+            (* 0.5 (+ (cadr mn) (cadr mx))))
+    )
+  )
+)
+
+(defun hc:in-box-p (p x1 y1 x2 y2)
+  (and p
+       (>= (car  p) x1) (<= (car  p) x2)
+       (>= (cadr p) y1) (<= (cadr p) y2))
+)
+
+;;; Undo the marks sitting inside the box X1 Y1 X2 Y2, and only those.
+;;; Checking one panel must not wipe the marks on panels checked before
+;;; it, but a panel being looked at again does have to lose its own
+;;; stale marks - so the clean-up is scoped to the area in hand.
+;;; Returns (holes . clouds).
+(defun hc:clear-box (x1 y1 x2 y2 / ss i n ent nhole ncloud)
+  (setq nhole 0 ncloud 0)
+  (if (setq ss (hc:ss-here (list (list -3 (list *hc:app*)))))
+    (progn
+      (setq i 0 n (sslength ss))
+      (while (< i n)
+        (setq ent (ssname ss i))
+        (if (and (hc:in-box-p (hc:ent-centre ent) x1 y1 x2 y2)
+                 (hc:unmark ent))
+          (setq nhole (1+ nhole))
+        )
+        (setq i (1+ i))
+      )
+    )
+  )
+  (if (tblsearch "LAYER" *hc:layer*)
+    (progn
+      (hc:ensure-layer)                 ; unlock it first or ENTDEL fails
+      (if (setq ss (hc:ss-here (list (cons 8 *hc:layer*))))
         (progn
-          (setq ss (hc:strip-hidden ss))
-          (princ (strcat "\nChecking every circle and block in "
-                         (if (= 1 (getvar "TILEMODE"))
-                           "model space"
-                           (strcat "layout " (getvar "CTAB")))
-                         "."))
+          (setq i 0 n (sslength ss))
+          (while (< i n)
+            (setq ent (ssname ss i))
+            (if (and (hc:in-box-p (hc:ent-centre ent) x1 y1 x2 y2)
+                     (not (vl-catch-all-error-p
+                            (vl-catch-all-apply 'entdel (list ent)))))
+              (setq ncloud (1+ ncloud))
+            )
+            (setq i (1+ i))
+          )
         )
       )
     )
   )
+  (cons nhole ncloud)
+)
 
-  (if (or (null ss) (= 0 (sslength ss)))
-    (progn
-      (princ "\nNo circles or blocks found - nothing to check.")
-      (exit)
-    )
-  )
 
-  (setq circles (hc:collect ss)
-        n       (length circles)
-        nblk    0
-        nonuni  0)
+;;; ---- one pass over one panel ------------------------------------
+
+;;; Check CIRCLES (already collected from SS) and mark what fails.
+;;; Returns T when the panel passed.
+(defun hc:run (circles ss panels thick arclen
+               / n maxrad flags i j rest more ci cj xi yi ri xj yj rj
+                 dx dy dist gap fuzz novl ntight worst
+                 sx1 sy1 sx2 sy2 cleared nred nring nlock nblk nonuni
+                 nins ninsused ent p key groups g
+                 xmin ymin xmax ymax pad diag ndrawn nfree msg)
+
+  (setq n      (length circles)
+        nblk   0
+        nonuni 0)
+
   (foreach ci circles
     (if (nth 5 ci) (setq nblk (1+ nblk)))
     (if (nth 6 ci) (setq nonuni (1+ nonuni)))
@@ -823,18 +855,6 @@
       (setq ninsused (cons (nth 3 ci) ninsused))
     )
   )
-
-  (if (< n 2)
-    (progn
-      (princ "\nOnly one circle found - at least two are needed to check spacing.")
-      (exit)
-    )
-  )
-
-  ;;; --- panel outlines (optional) --------------------------------
-  (princ "\nSelect panel outline(s) <ENTER = cloud the extents of the holes>: ")
-  (setq pss (ssget '((0 . "LWPOLYLINE,POLYLINE,INSERT,REGION,ELLIPSE,SPLINE"))))
-  (if pss (setq panels (hc:panels pss)))
 
   (princ (strcat "\nChecking " (itoa n) " circles against a minimum edge distance of "
                  (hc:fmt thick) " ..."))
@@ -902,12 +922,34 @@
   )
 
   ;;; --- from here on the drawing is modified ---------------------
-  (vla-startundomark doc)
-  (setq undo T)
-
-  ;;; Undo the previous run first, so a hole that has since been
-  ;;; fixed does not stay red and clouds do not pile up
-  (setq cleared (hc:clear-all))
+  ;;; The undo group is opened and closed by the caller, so one U
+  ;;; steps back exactly one panel.
+  ;;;
+  ;;; The patch of drawing this pass owns: everything it just looked
+  ;;; at, plus any outline picked for it, with a little margin.  Marks
+  ;;; inside it are left over from an earlier look at this same panel
+  ;;; and get replaced.  Marks anywhere else belong to panels already
+  ;;; checked and are left exactly as they are.
+  (setq sx1 nil)
+  (foreach ci circles
+    (setq xi (car ci) yi (cadr ci) ri (caddr ci))
+    (if (null sx1)
+      (setq sx1 (- xi ri) sx2 (+ xi ri) sy1 (- yi ri) sy2 (+ yi ri))
+      (setq sx1 (min sx1 (- xi ri)) sx2 (max sx2 (+ xi ri))
+            sy1 (min sy1 (- yi ri)) sy2 (max sy2 (+ yi ri)))
+    )
+  )
+  (foreach p panels
+    (setq sx1 (min sx1 (car   p)) sy1 (min sy1 (cadr   p))
+          sx2 (max sx2 (caddr p)) sy2 (max sy2 (cadddr p)))
+  )
+  (setq diag (distance (list sx1 sy1) (list sx2 sy2))
+        pad  (max thick (* 0.05 diag))
+        sx1  (- sx1 pad)
+        sy1  (- sy1 pad)
+        sx2  (+ sx2 pad)
+        sy2  (+ sy2 pad))
+  (setq cleared (hc:clear-box sx1 sy1 sx2 sy2))
   (if (> (+ novl ntight) 0) (hc:ensure-layer))
 
   ;;; --- flag the failing holes -----------------------------------
@@ -983,9 +1025,6 @@
     )
   )
 
-  (vla-endundomark doc)
-  (setq undo nil)
-
   ;;; --- report ---------------------------------------------------
   (princ "\n")
   (princ "\n--- HOLECHECK results --------------------------------")
@@ -1007,7 +1046,7 @@
                    "  at  " (hc:fmt (cadr worst)) "," (hc:fmt (caddr worst))))
   )
   (if (or (> (car cleared) 0) (> (cdr cleared) 0))
-    (princ (strcat "\n  " (hc:pad "Marks cleared from last run " 28) " "
+    (princ (strcat "\n  " (hc:pad "Earlier marks here replaced " 28) " "
                    (itoa (car cleared)) " hole(s), "
                    (itoa (cdr cleared)) " cloud(s)"))
   )
@@ -1054,6 +1093,9 @@
                           " hole(s) sit in blocks scaled unevenly in X and Y."
                           "\nThose were measured on their larger radius."))
       )
+      (setq msg (strcat msg
+                        "\n\nMarks on panels checked earlier are untouched."
+                        "\nRun HOLECHECKCLEAR when every panel is fixed."))
       (if (and (> nins 0) (< (length ninsused) nins))
         (setq msg (strcat msg "\n\nNote: " (itoa (- nins (length ninsused)))
                           " of the " (itoa nins)
@@ -1088,9 +1130,118 @@
                           " hole(s) on a locked layer could not be marked"))
       )
       (setq msg (strcat msg "\n" (itoa ndrawn) " revision cloud(s) on layer "
-                        *hc:layer*))
+                        *hc:layer*
+                        "\n\nMarks stay put until HOLECHECKCLEAR is run,"
+                        "\nso you can work through the other panels."))
       (alert msg)
     )
+  )
+  (= 0 (+ novl ntight))
+)
+
+
+;;; ---- main command -----------------------------------------------
+
+(defun c:HOLECHECK
+    (/ *error* doc undo thick arclen kw ss pss panels circles npanel done)
+
+  ;;; Local error handler - closes the undo group on cancel / error
+  (defun *error* (msg)
+    (if undo (vl-catch-all-apply 'vla-endundomark (list doc)))
+    (if (not (member msg '("Function cancelled" "quit / exit abort"
+                           "console break")))
+      (princ (strcat "\n** HOLECHECK Error: " msg))
+    )
+    (princ)
+  )
+
+  (setq doc (vla-get-activedocument (vlax-get-acad-object)))
+  (regapp *hc:app*)
+
+  ;;; --- settings -------------------------------------------------
+  (hc:settings)
+
+  ;;; --- work through the sheet one panel at a time ---------------
+  ;;; The command stays open after each verdict so the next panel can
+  ;;; be picked straight away, and the marks build up as you go.
+  ;;; Nothing is tidied away until HOLECHECKCLEAR is run.
+  (setq npanel 0
+        done   nil)
+
+  (while (not done)
+    (setq *hc:vcache* nil               ; layer visibility caches per pass
+          thick       *hc:thick*
+          arclen      (if *hc:arclen* *hc:arclen* 0.0)
+          ss          nil
+          pss         nil
+          panels      nil
+          circles     nil)
+
+    (initget "All Settings eXit")
+    (setq kw (getkword
+               (strcat "\n\nPanel " (itoa (1+ npanel))
+                       " - ENTER to pick this panel's holes, or [All/Settings/eXit]: ")))
+    (cond
+      ((= kw "eXit") (setq done T))
+
+      ((= kw "Settings") (hc:ask))
+
+      (T
+       (if (= kw "All")
+         (progn
+           (setq ss (hc:ss-here '((0 . "CIRCLE,INSERT"))))
+           (if ss
+             (progn
+               (setq ss (hc:strip-hidden ss))
+               (princ (strcat "\nChecking every circle and block in "
+                              (if (= 1 (getvar "TILEMODE"))
+                                "model space"
+                                (strcat "layout " (getvar "CTAB")))
+                              "."))
+             )
+           )
+         )
+         (progn
+           (princ "\nSelect this panel's circles and/or blocks: ")
+           (setq ss (ssget '((0 . "CIRCLE,INSERT"))))
+         )
+       )
+
+       (if (or (null ss) (= 0 (sslength ss)))
+         (princ "\nNothing selected.")
+         (progn
+           (setq circles (hc:collect ss))
+           (if (< (length circles) 2)
+             (progn
+               (princ (strcat "\n" (itoa (length circles))
+                              " hole(s) in that selection - at least two are"
+                              " needed to check spacing."))
+               (alert (strcat "HOLECHECK\n\nThat selection holds "
+                              (itoa (length circles)) " hole(s).\n\nAt least two"
+                              " are needed to check spacing.\nNothing was"
+                              " changed."))
+             )
+             (progn
+               (princ "\nSelect this panel's outline <ENTER = cloud the extents of the holes>: ")
+               (setq pss (ssget '((0 . "LWPOLYLINE,POLYLINE,INSERT,REGION,ELLIPSE,SPLINE"))))
+               (if pss (setq panels (hc:panels pss)))
+               (vla-startundomark doc)
+               (setq undo T)
+               (hc:run circles ss panels thick arclen)
+               (vla-endundomark doc)
+               (setq undo nil)
+               (setq npanel (1+ npanel))
+             )
+           )
+         )
+       )
+      )
+    )
+  )
+
+  (princ (strcat "\nHOLECHECK finished - " (itoa npanel) " panel(s) checked."))
+  (if (> npanel 0)
+    (princ "\nMarks stay in the drawing until HOLECHECKCLEAR is run.")
   )
   (princ)
 )
