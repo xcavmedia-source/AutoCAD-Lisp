@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AutoCAD AutoLoader package for the CAD Hours Tracker.
+
+  Copy the whole CADHours.bundle folder to one of:
+     %APPDATA%\Autodesk\ApplicationPlugins        (this user only)
+     %PROGRAMDATA%\Autodesk\ApplicationPlugins    (everyone on the PC)
+
+  AutoCAD picks it up on the next start.  There is no installer, no
+  MSI, no registry work and no elevated rights needed for the
+  per-user location.
+-->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AutodeskProduct="AutoCAD"
+    ProductType="Application"
+    Name="CAD Hours Tracker"
+    Description="Per-drawing job time tracking, logged to a searchable CSV database"
+    AppVersion="1.0.0"
+    ProductCode="{BE2BBFE1-8652-4643-A0EB-44350597FD45}"
+    UpgradeCode="{BE2BBFE1-8652-4643-A0EB-44350597FD45}"
+    Author="CAD Hours Tracker">
+
+  <CompanyDetails Name="CAD Hours Tracker" Url="" Email="" />
+
+  <!-- AutoCAD 2019 and later (full) -->
+  <Components Description="AutoCAD 2019 and later">
+    <RuntimeRequirements OS="Win64"
+                         Platform="AutoCAD*"
+                         SeriesMin="R23.0"
+                         SupportPath="./Contents" />
+    <ComponentEntry AppName="CADHours"
+                    Version="1.0.0"
+                    ModuleName="./Contents/CADHours.lsp"
+                    PerDocument="True"
+                    LoadOnAutoCADStartup="True"
+                    AppDescription="Loads the hours tracker into every drawing" />
+  </Components>
+
+  <!-- AutoCAD LT 2024 and later - the release that gained AutoLISP -->
+  <Components Description="AutoCAD LT 2024 and later">
+    <RuntimeRequirements OS="Win64"
+                         Platform="AutoCAD LT*"
+                         SeriesMin="R24.3"
+                         SupportPath="./Contents" />
+    <ComponentEntry AppName="CADHoursLT"
+                    Version="1.0.0"
+                    ModuleName="./Contents/CADHours.lsp"
+                    PerDocument="True"
+                    LoadOnAutoCADStartup="True"
+                    AppDescription="Loads the hours tracker into every drawing" />
+  </Components>
+
+</ApplicationPackage>
