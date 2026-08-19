@@ -2,7 +2,7 @@
 ;;; HOLECHECK.lsp  -  Hole Edge-to-Edge Spacing Checker
 ;;;
 ;;; Checks the clear (edge to edge) distance between every pair of
-;;; selected CIRCLEs.  The material thickness entered by the user
+;;; selected holes.  The material thickness entered by the user
 ;;; becomes the minimum acceptable edge distance:
 ;;;
 ;;;     gap = centre-to-centre distance - r1 - r2
@@ -15,8 +15,23 @@
 ;;; carries a tolerance so rounding noise cannot fail a nominally
 ;;; correct pattern.
 ;;;
+;;; WHAT COUNTS AS A HOLE
+;;; Loose CIRCLEs, and circles living inside blocks.  Select a block
+;;; and every circle in it is checked where it really sits, through
+;;; rotation, scaling, mirroring and nesting.  Arrays are covered:
+;;; an MINSERT is expanded cell by cell, an associative array is a
+;;; block reference whose definition holds the items, so the same
+;;; recursion reaches them, and an ordinary copied array is just
+;;; loose circles.  Holes in blocks are measured against loose holes
+;;; and against holes in other blocks, so a hole crowding a panel
+;;; edge from inside a block is still caught.
+;;;
 ;;; HOW FAILURES ARE FLAGGED
-;;;   - every hole involved in a failure is turned red
+;;;   - every loose hole involved in a failure is turned red
+;;;   - a failing hole inside a block gets a red ring instead: the
+;;;     block definition is shared with every other insert of that
+;;;     block, so recolouring it would mark holes in other panels
+;;;     that are perfectly fine
 ;;;   - one revision cloud is drawn around the whole panel, on layer
 ;;;     H_HoleCheck (red), pointing the checker at the panel so they
 ;;;     can go find the red holes inside it
@@ -42,10 +57,15 @@
 ;;; Commands : HOLECHECK       run the check
 ;;;            HOLECHECKCLEAR  remove every mark the check left
 ;;;
-;;; Notes : distances are measured in plan (WCS XY); Z is ignored.
+;;; Notes : the verdict is shown in a dialog as well as on the command
+;;;         line, because a pass leaves nothing in the drawing to see.
+;;;         distances are measured in plan (WCS XY); Z is ignored.
 ;;;         values are reported in decimal drawing units, 4 places.
 ;;;         a hole on a locked layer cannot be recoloured; the report
 ;;;         says how many were skipped for that reason.
+;;;         a block scaled unevenly in X and Y turns its circles into
+;;;         ellipses; those are measured on the larger radius, which
+;;;         errs towards flagging, and are counted in the report.
 ;;;
 ;;; Requirements : AutoCAD 2000+ with Visual LISP / ActiveX support
 ;;; ============================================================
@@ -316,41 +336,217 @@
 )
 
 
+;;; ---- layer visibility -------------------------------------------
+
+;;; T when LAY is switched on and thawed.  Answers are cached because
+;;; this gets asked once per hole on a big pattern.
+(defun hc:layer-vis (lay / rec hit)
+  (if (setq hit (assoc lay *hc:vcache*))
+    (cdr hit)
+    (progn
+      (setq rec (tblsearch "LAYER" lay)
+            hit (and rec
+                     (>= (cdr (assoc 62 rec)) 0)               ; on
+                     (= 0 (logand 1 (cdr (assoc 70 rec))))))   ; thawed
+      (setq *hc:vcache* (cons (cons lay hit) *hc:vcache*))
+      hit
+    )
+  )
+)
+
+
+;;; ---- transforms for holes inside blocks -------------------------
+;;; A transform is (M . V), turning a point P into M*P + V.  M is a
+;;; 3x3 matrix held as three row lists.  Composing these is what lets
+;;; the tool reach a circle nested several blocks deep and still know
+;;; where it really sits on the sheet.
+
+(defun hc:m-ident ()
+  '((1.0 0.0 0.0) (0.0 1.0 0.0) (0.0 0.0 1.0))
+)
+
+(defun hc:m*v (m v)
+  (mapcar '(lambda (row) (apply '+ (mapcar '* row v))) m)
+)
+
+(defun hc:m*m (a b / cols)
+  (setq cols (list (mapcar 'car b) (mapcar 'cadr b) (mapcar 'caddr b)))
+  (mapcar '(lambda (row)
+             (mapcar '(lambda (col) (apply '+ (mapcar '* row col))) cols))
+          a)
+)
+
+(defun hc:xf-apply (xf p)
+  (mapcar '+ (hc:m*v (car xf) p) (cdr xf))
+)
+
+;;; Apply INNER first, then OUTER
+(defun hc:xf-compose (outer inner)
+  (cons (hc:m*m (car outer) (car inner))
+        (mapcar '+ (hc:m*v (car outer) (cdr inner)) (cdr outer)))
+)
+
+;;; Rotation that takes the OCS of extrusion NRM out to WCS.  The
+;;; columns are just the OCS unit vectors expressed in WCS, so AutoCAD
+;;; works out the arbitrary axis algorithm for us.
+(defun hc:ocs-matrix (nrm / cx cy cz)
+  (if (or (null nrm) (equal nrm '(0.0 0.0 1.0) 1.0e-12))
+    (hc:m-ident)
+    (progn
+      (setq cx (trans '(1.0 0.0 0.0) nrm 0 T)
+            cy (trans '(0.0 1.0 0.0) nrm 0 T)
+            cz (trans '(0.0 0.0 1.0) nrm 0 T))
+      (list (list (car   cx) (car   cy) (car   cz))
+            (list (cadr  cx) (cadr  cy) (cadr  cz))
+            (list (caddr cx) (caddr cy) (caddr cz)))
+    )
+  )
+)
+
+;;; Transform(s) taking the inside of an INSERT's block definition out
+;;; to the space the INSERT itself sits in.  A plain INSERT gives one;
+;;; an MINSERT gives one per cell of its array, so arrayed holes are
+;;; all checked instead of only the first.
+(defun hc:insert-xfs (ed / p sx sy sz ang nrm brec base amat rz scl m
+                         ncol nrow cs rs i j off lst)
+  (setq p     (cdr (assoc 10 ed))
+        sx    (cond ((cdr (assoc 41 ed))) (1.0))
+        sy    (cond ((cdr (assoc 42 ed))) (1.0))
+        sz    (cond ((cdr (assoc 43 ed))) (1.0))
+        ang   (cond ((cdr (assoc 50 ed))) (0.0))
+        nrm   (cdr (assoc 210 ed))
+        brec  (tblsearch "BLOCK" (cdr (assoc 2 ed)))
+        base  (if brec (cdr (assoc 10 brec)) '(0.0 0.0 0.0)))
+  (setq amat (hc:ocs-matrix nrm)
+        rz   (list (list (cos ang) (- (sin ang)) 0.0)
+                   (list (sin ang) (cos ang)     0.0)
+                   (list 0.0       0.0           1.0))
+        scl  (list (list sx 0.0 0.0) (list 0.0 sy 0.0) (list 0.0 0.0 sz))
+        m    (hc:m*m amat (hc:m*m rz scl)))
+  ;; MINSERT array counts; a normal INSERT has neither
+  (setq ncol (max 1 (cond ((cdr (assoc 70 ed))) (1)))
+        nrow (max 1 (cond ((cdr (assoc 71 ed))) (1)))
+        cs   (cond ((cdr (assoc 44 ed))) (0.0))
+        rs   (cond ((cdr (assoc 45 ed))) (0.0))
+        lst  '()
+        i    0)
+  (while (< i ncol)
+    (setq j 0)
+    (while (< j nrow)
+      ;; array spacing runs along the insert's own rotated axes
+      (setq off (hc:m*v rz (list (* i cs) (* j rs) 0.0)))
+      (setq lst (cons (cons m (mapcar '- (hc:m*v amat (mapcar '+ p off))
+                                        (hc:m*v m base)))
+                      lst)
+            j   (1+ j))
+    )
+    (setq i (1+ i))
+  )
+  lst
+)
+
+;;; One circle out of a block definition, expressed in WCS as
+;;; (x y radius non-uniform-flag).  A block scaled differently in X
+;;; and Y turns its circles into ellipses; those are measured on their
+;;; larger radius, which errs towards flagging rather than missing.
+(defun hc:xf-circle (ed xf / ctr rad nrm cm c u1 u2 s1 s2)
+  (setq ctr (cdr (assoc 10 ed))
+        rad (cdr (assoc 40 ed))
+        nrm (cdr (assoc 210 ed))
+        cm  (hc:ocs-matrix nrm))
+  (setq c  (hc:xf-apply xf (hc:m*v cm ctr))
+        u1 (hc:m*v (car xf) (hc:m*v cm '(1.0 0.0 0.0)))
+        u2 (hc:m*v (car xf) (hc:m*v cm '(0.0 1.0 0.0)))
+        s1 (sqrt (apply '+ (mapcar '* u1 u1)))
+        s2 (sqrt (apply '+ (mapcar '* u2 u2))))
+  (list (car c) (cadr c) (* rad (max s1 s2))
+        (> (abs (- s1 s2)) (* 1.0e-6 (max s1 s2 1.0))))
+)
+
+;;; Walk a block definition and hand back every circle in it, nested
+;;; blocks included, each already transformed out to WCS by XF.
+;;; DEPTH stops a self-referencing definition from looping for ever.
+(defun hc:walk-block (bname xf depth / brec ent ed typ lay sub acc)
+  (setq acc '())
+  (if (and (<= depth 16) (setq brec (tblsearch "BLOCK" bname)))
+    (progn
+      (setq ent (cdr (assoc -2 brec)))
+      (while ent
+        (setq ed  (entget ent)
+              typ (cdr (assoc 0 ed))
+              lay (cdr (assoc 8 ed)))
+        (cond
+          ((= typ "ENDBLK") (setq ent nil))
+          ;; layer 0 takes the colour and visibility of the insert,
+          ;; which the caller has already vetted
+          ((and (= typ "CIRCLE")
+                (or (= lay "0") (hc:layer-vis lay)))
+           (setq acc (cons (hc:xf-circle ed xf) acc)))
+          ((and (= typ "INSERT")
+                (or (= lay "0") (hc:layer-vis lay)))
+           (foreach sub (hc:insert-xfs ed)
+             (setq acc (append (hc:walk-block (cdr (assoc 2 ed))
+                                              (hc:xf-compose xf sub)
+                                              (1+ depth))
+                               acc))
+           ))
+        )
+        (if ent (setq ent (entnext ent)))
+      )
+    )
+  )
+  acc
+)
+
+
+;;; ---- marking a hole that lives inside a block -------------------
+
+;;; A block definition is shared by every insert of that block, so
+;;; recolouring a circle inside one would mark the same hole in every
+;;; other panel using it.  These holes get a red ring on H_HoleCheck
+;;; instead.  It is an LWPOLYLINE, never a CIRCLE, so nothing reading
+;;; circles out of the drawing can mistake a marker for a real hole.
+(defun hc:ring (x y rad / r)
+  (setq r (* rad 1.5))
+  (entmakex (list '(0 . "LWPOLYLINE")
+                  '(100 . "AcDbEntity")
+                  (cons 8 *hc:layer*)
+                  '(100 . "AcDbPolyline")
+                  '(90 . 2)
+                  '(70 . 1)                     ; closed
+                  (cons 10 (list (- x r) y))    ; two 180 degree arcs
+                  '(42 . 1.0)                   ; make a full circle
+                  (cons 10 (list (+ x r) y))
+                  '(42 . 1.0)))
+)
+
+
 ;;; ---- selection --------------------------------------------------
 
 ;;; Drop circles sitting on a frozen or switched-off layer.  Only
 ;;; needed on the "check everything" path - a normal pick never
 ;;; returns those in the first place.
-(defun hc:strip-hidden (ss / i n ent lay rec vis cache hidden)
-  (setq i      0
-        n      (sslength ss)
-        cache  '()
-        hidden '())
+(defun hc:strip-hidden (ss / i n ent hidden)
+  (setq i 0 n (sslength ss) hidden '())
   (while (< i n)
-    (setq ent (ssname ss i)
-          lay (cdr (assoc 8 (entget ent))))
-    (if (setq rec (assoc lay cache))
-      (setq vis (cdr rec))
-      (progn
-        (setq rec (tblsearch "LAYER" lay)
-              vis (and rec
-                       (>= (cdr (assoc 62 rec)) 0)              ; on
-                       (= 0 (logand 1 (cdr (assoc 70 rec))))))  ; thawed
-        (setq cache (cons (cons lay vis) cache))
-      )
+    (setq ent (ssname ss i))
+    (if (not (hc:layer-vis (cdr (assoc 8 (entget ent)))))
+      (setq hidden (cons ent hidden))
     )
-    (if (not vis) (setq hidden (cons ent hidden)))
     (setq i (1+ i))
   )
   (foreach ent hidden (ssdel ent ss))
   ss
 )
 
-;;; Turn a selection set into a list of (x y radius ename seq)
-;;; records.  Centres are converted out of the circle's own OCS into
-;;; WCS, so circles drawn in a rotated UCS still measure correctly.
+;;; Turn a selection set into a list of
+;;;     (x y radius ename seq in-block non-uniform)
+;;; records.  A CIRCLE contributes itself; an INSERT contributes every
+;;; circle inside it, nested blocks and MINSERT arrays included, each
+;;; transformed out to where it really sits on the sheet.  ENAME is the
+;;; circle for a plain hole and the insert for one inside a block.
 ;;; The list comes back sorted left to right on X.
-(defun hc:collect (ss / i n ent ed ctr rad nrm seq lst)
+(defun hc:collect (ss / i n ent ed typ ctr rad nrm seq lst xf c)
   (setq i   0
         n   (sslength ss)
         seq 0
@@ -358,14 +554,31 @@
   (while (< i n)
     (setq ent (ssname ss i)
           ed  (entget ent)
-          rad (cdr (assoc 40 ed))
-          ctr (cdr (assoc 10 ed))
-          nrm (cdr (assoc 210 ed)))
-    (if (null nrm) (setq nrm '(0.0 0.0 1.0)))
-    (setq ctr (trans ctr nrm 0))
-    (if (and rad (> rad 1.0e-12))
-      (setq lst (cons (list (car ctr) (cadr ctr) rad ent seq) lst)
-            seq (1+ seq))
+          typ (cdr (assoc 0 ed)))
+    (cond
+      ((= typ "CIRCLE")
+       (setq rad (cdr (assoc 40 ed))
+             ctr (cdr (assoc 10 ed))
+             nrm (cdr (assoc 210 ed)))
+       (if (null nrm) (setq nrm '(0.0 0.0 1.0)))
+       (setq ctr (trans ctr nrm 0))
+       (if (and rad (> rad 1.0e-12))
+         (setq lst (cons (list (car ctr) (cadr ctr) rad ent seq nil nil) lst)
+               seq (1+ seq))
+       )
+      )
+      ((= typ "INSERT")
+       (foreach xf (hc:insert-xfs ed)
+         (foreach c (hc:walk-block (cdr (assoc 2 ed)) xf 0)
+           (if (> (caddr c) 1.0e-12)
+             (setq lst (cons (list (car c) (cadr c) (caddr c) ent seq
+                                   T (cadddr c))
+                             lst)
+                   seq (1+ seq))
+           )
+         )
+       )
+      )
     )
     (setq i (1+ i))
   )
@@ -536,8 +749,8 @@
        doc undo ss pss panels circles n maxrad thick arclen
        flags i j rest more ci cj xi yi ri xj yj rj
        dx dy dist gap fuzz novl ntight worst
-       cleared nred nlock ent p key groups g
-       xmin ymin xmax ymax pad diag ndrawn nfree)
+       cleared nred nring nlock nblk nonuni nins ninsused ent p key groups g
+       xmin ymin xmax ymax pad diag ndrawn nfree msg)
 
   ;;; Local error handler - closes the undo group on cancel / error
   (defun *error* (msg)
@@ -551,6 +764,7 @@
 
   (setq doc (vla-get-activedocument (vlax-get-acad-object)))
   (regapp *hc:app*)
+  (setq *hc:vcache* nil)                ; layer visibility is cached per run
 
   ;;; --- settings -------------------------------------------------
   (hc:settings)
@@ -558,16 +772,16 @@
         arclen (if *hc:arclen* *hc:arclen* 0.0))
 
   ;;; --- selection ------------------------------------------------
-  (princ "\nSelect circles to check <ENTER = every circle in the current space>: ")
-  (setq ss (ssget '((0 . "CIRCLE"))))
+  (princ "\nSelect circles and/or blocks to check <ENTER = everything in the current space>: ")
+  (setq ss (ssget '((0 . "CIRCLE,INSERT"))))
 
   (if (null ss)
     (progn
-      (setq ss (hc:ss-here '((0 . "CIRCLE"))))
+      (setq ss (hc:ss-here '((0 . "CIRCLE,INSERT"))))
       (if ss
         (progn
           (setq ss (hc:strip-hidden ss))
-          (princ (strcat "\nChecking every circle in "
+          (princ (strcat "\nChecking every circle and block in "
                          (if (= 1 (getvar "TILEMODE"))
                            "model space"
                            (strcat "layout " (getvar "CTAB")))
@@ -579,13 +793,36 @@
 
   (if (or (null ss) (= 0 (sslength ss)))
     (progn
-      (princ "\nNo circles found - nothing to check.")
+      (princ "\nNo circles or blocks found - nothing to check.")
       (exit)
     )
   )
 
   (setq circles (hc:collect ss)
-        n       (length circles))
+        n       (length circles)
+        nblk    0
+        nonuni  0)
+  (foreach ci circles
+    (if (nth 5 ci) (setq nblk (1+ nblk)))
+    (if (nth 6 ci) (setq nonuni (1+ nonuni)))
+  )
+
+  ;;; How many selected blocks actually gave up holes.  A block that
+  ;;; gave none is worth saying out loud: it is usually harmless (a
+  ;;; title block, a weld symbol) but it is also the one way this tool
+  ;;; could report a pass without ever having looked inside something.
+  (setq nins 0 ninsused '() i 0)
+  (while (< i (sslength ss))
+    (if (= "INSERT" (cdr (assoc 0 (entget (ssname ss i)))))
+      (setq nins (1+ nins))
+    )
+    (setq i (1+ i))
+  )
+  (foreach ci circles
+    (if (and (nth 5 ci) (not (member (nth 3 ci) ninsused)))
+      (setq ninsused (cons (nth 3 ci) ninsused))
+    )
+  )
 
   (if (< n 2)
     (progn
@@ -671,10 +908,12 @@
   ;;; Undo the previous run first, so a hole that has since been
   ;;; fixed does not stay red and clouds do not pile up
   (setq cleared (hc:clear-all))
+  (if (> (+ novl ntight) 0) (hc:ensure-layer))
 
-  ;;; --- turn the failing holes red -------------------------------
+  ;;; --- flag the failing holes -----------------------------------
   ;;; and sort them into the panel each one sits in
   (setq nred   0
+        nring  0
         nlock  0
         groups '()
         i      0
@@ -684,9 +923,16 @@
       (progn
         (setq ci  (car rest)
               ent (nth 3 ci))
-        (if (hc:mark-red ent)
-          (setq nred (1+ nred))
-          (setq nlock (1+ nlock))
+        (if (nth 5 ci)
+          ;; inside a block: the definition is shared with every other
+          ;; insert of that block, so ring it rather than recolour it
+          (if (hc:ring (car ci) (cadr ci) (caddr ci))
+            (setq nring (1+ nring))
+          )
+          (if (hc:mark-red ent)
+            (setq nred (1+ nred))
+            (setq nlock (1+ nlock))
+          )
         )
         ;; group by panel; nil groups the holes no panel claimed
         ;; "none" collects the holes that no selected outline claimed
@@ -706,7 +952,6 @@
   ;;; --- cloud the panels that failed -----------------------------
   (setq ndrawn 0
         nfree  0)
-  (if groups (hc:ensure-layer))
   (foreach g groups
     (setq key (car g)
           p   nil)
@@ -744,7 +989,14 @@
   ;;; --- report ---------------------------------------------------
   (princ "\n")
   (princ "\n--- HOLECHECK results --------------------------------")
-  (princ (strcat "\n  " (hc:pad "Circles checked " 28) " " (itoa n)))
+  (princ (strcat "\n  " (hc:pad "Holes checked " 28) " " (itoa n)
+                 (if (> nblk 0)
+                   (strcat "  (" (itoa nblk) " inside blocks)")
+                   "")))
+  (if (> nins 0)
+    (princ (strcat "\n  " (hc:pad "Blocks scanned " 28) " " (itoa nins)
+                   "  (" (itoa (length ninsused)) " held holes)"))
+  )
   (princ (strcat "\n  " (hc:pad "Minimum edge distance " 28) " " (hc:fmt thick)))
   (princ (strcat "\n  " (hc:pad "Overlapping pairs " 28) " " (itoa novl)))
   (princ (strcat "\n  " (hc:pad "Pairs closer than minimum " 28) " " (itoa ntight)))
@@ -760,6 +1012,14 @@
                    (itoa (cdr cleared)) " cloud(s)"))
   )
   (princ (strcat "\n  " (hc:pad "Holes turned red " 28) " " (itoa nred)))
+  (if (> nring 0)
+    (princ (strcat "\n  " (hc:pad "Holes ringed inside blocks " 28) " "
+                   (itoa nring)))
+  )
+  (if (> nonuni 0)
+    (princ (strcat "\n  " (hc:pad "Holes in stretched blocks " 28) " "
+                   (itoa nonuni) "  (measured on the larger radius)"))
+  )
   (if (> nlock 0)
     (princ (strcat "\n  " (hc:pad "Holes on a locked layer " 28) " "
                    (itoa nlock) "  (not recoloured)"))
@@ -774,12 +1034,63 @@
                    (T (strcat "  of " (itoa (length panels)) " panel(s)")))))
   (princ "\n------------------------------------------------------")
 
+  ;;; The verdict goes to the command line and to a dialog.  A pass
+  ;;; leaves nothing behind in the drawing to look at, so without the
+  ;;; dialog it is far too easy to miss.
   (if (= 0 (+ novl ntight))
-    (princ (strcat "\nPASS - every hole edge is at least " (hc:fmt thick)
-                   " from its neighbours."))
-    (princ (strcat "\nFAIL - " (itoa (+ novl ntight))
-                   " bad hole pair(s).  Red holes inside the cloud(s) on layer "
-                   *hc:layer* "."))
+    (progn
+      (princ (strcat "\nPASS - every hole edge is at least " (hc:fmt thick)
+                     " from its neighbours."))
+      (setq msg (strcat "HOLECHECK  -  PASS\n\n"
+                        (itoa n) " holes checked"
+                        (if (> nblk 0)
+                          (strcat " (" (itoa nblk) " inside blocks)")
+                          "")
+                        "\nMinimum edge distance: " (hc:fmt thick)
+                        "\n\nEvery hole edge is at least " (hc:fmt thick)
+                        " from its neighbours."))
+      (if (> nonuni 0)
+        (setq msg (strcat msg "\n\nNote: " (itoa nonuni)
+                          " hole(s) sit in blocks scaled unevenly in X and Y."
+                          "\nThose were measured on their larger radius."))
+      )
+      (if (and (> nins 0) (< (length ninsused) nins))
+        (setq msg (strcat msg "\n\nNote: " (itoa (- nins (length ninsused)))
+                          " of the " (itoa nins)
+                          " selected block(s) held no circles at all."
+                          "\nUsually harmless, but worth a look before"
+                          "\ntrusting this pass."))
+      )
+      (alert msg)
+    )
+    (progn
+      (princ (strcat "\nFAIL - " (itoa (+ novl ntight))
+                     " bad hole pair(s).  Red holes inside the cloud(s) on layer "
+                     *hc:layer* "."))
+      (setq msg (strcat "HOLECHECK  -  FAIL\n\n"
+                        (itoa n) " holes checked"
+                        (if (> nblk 0)
+                          (strcat " (" (itoa nblk) " inside blocks)")
+                          "")
+                        "\nMinimum edge distance: " (hc:fmt thick)
+                        "\n\n" (itoa novl) " overlapping pair(s)"
+                        "\n" (itoa ntight) " pair(s) closer than the minimum"))
+      (if worst
+        (setq msg (strcat msg "\nSmallest edge distance: " (hc:fmt (car worst))))
+      )
+      (setq msg (strcat msg "\n\n" (itoa nred) " hole(s) turned red"))
+      (if (> nring 0)
+        (setq msg (strcat msg "\n" (itoa nring)
+                          " hole(s) ringed - those live inside blocks"))
+      )
+      (if (> nlock 0)
+        (setq msg (strcat msg "\n" (itoa nlock)
+                          " hole(s) on a locked layer could not be marked"))
+      )
+      (setq msg (strcat msg "\n" (itoa ndrawn) " revision cloud(s) on layer "
+                        *hc:layer*))
+      (alert msg)
+    )
   )
   (princ)
 )
