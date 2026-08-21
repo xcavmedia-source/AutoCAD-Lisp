@@ -974,10 +974,31 @@
   )
 )
 
-(defun pf:getboundary ( / m nsel en mat p1 p2 mnx mny mxx mxy clip)
-  (initget "Select Window")
-  (setq m (getkword (strcat "\nFill area by [Select boundary/Window corners] <"
-                            (cond (*perf-method*) ("Select")) ">: ")))
+;;; Build the (clippoly realverts) pair for one curve entity, or NIL
+;;; when the object cannot serve as a boundary.
+(defun pf:boundaryof (en mat / clip)
+  (if (not (vl-catch-all-error-p
+             (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
+    (progn
+      (if (not (pf:isclosed en))
+        (princ "\nNote: boundary not flagged closed - treating its outline as a closed loop."))
+      ;; Straight-segment polylines clip against their true vertices
+      ;; (few points = fast); curved boundaries fall back to sampling.
+      (if (pf:lwnoarcs en)
+        (progn (setq clip (pf:realverts en mat)) (list clip clip))
+        (list (pf:curvepts en mat) (pf:realverts en mat))))
+    (progn (princ "\nThat object cannot be used as a boundary.") nil)
+  )
+)
+
+;;; Returns a LIST of (clippoly realverts) pairs - one per panel - so a
+;;; single run can fill several outlines.  NIL means the user cancelled.
+(defun pf:getboundary ( / m nsel en mat p1 p2 mnx mny mxx mxy clip
+                          ss i out one)
+  (initget "Select Multiple Window")
+  (setq m (getkword
+            (strcat "\nFill area by [Select boundary/Multiple/Window corners] <"
+                    (cond (*perf-method*) ("Select")) ">: ")))
   (if (null m) (setq m (cond (*perf-method*) ("Select"))))
   (setq *perf-method* m)
   (setcfg (strcat *perf-cfgroot* "Method") m)
@@ -990,24 +1011,28 @@
        (progn (princ "\nNothing selected.") nil)
        (progn
          (setq en  (car nsel)
-               mat (if (>= (length nsel) 4) (caddr nsel) nil))
-         ;; Accept any curve-like object; sample its outline and let
-         ;; the point-in-polygon test close the ring.
-         (if (not (vl-catch-all-error-p
-                    (vl-catch-all-apply 'vlax-curve-getEndParam (list en))))
-           (progn
-             (if (not (pf:isclosed en))
-               (princ "\nNote: boundary not flagged closed - treating its outline as a closed loop."))
-             ;; Straight-segment polylines clip against their true
-             ;; vertices (few points = fast); curved boundaries fall
-             ;; back to dense curve sampling.
-             (if (pf:lwnoarcs en)
-               (progn
-                 (setq clip (pf:realverts en mat))
-                 (list clip clip))
-               (list (pf:curvepts en mat) (pf:realverts en mat))))
-           (progn (princ "\nThat object cannot be used as a boundary.") nil))
+               mat (if (>= (length nsel) 4) (caddr nsel) nil)
+               one (pf:boundaryof en mat))
+         (if one (list one) nil)
        )
+     )
+    )
+    ((= m "Multiple")
+     ;; Several outlines at once.  These are top-level objects - use
+     ;; Select for a boundary nested inside a block.
+     (princ "\nSelect closed panel outlines (ENTER when done): ")
+     (setq ss (ssget '((0 . "LWPOLYLINE,POLYLINE,CIRCLE,ELLIPSE,SPLINE"))))
+     (if (null ss)
+       (progn (princ "\nNothing selected.") nil)
+       (progn
+         (setq out '() i 0)
+         (while (< i (sslength ss))
+           (setq one (pf:boundaryof (ssname ss i) nil))
+           (if one (setq out (cons one out)))
+           (setq i (1+ i)))
+         (setq out (reverse out))
+         (princ (strcat "\n" (itoa (length out)) " panel(s) selected."))
+         out)
      )
     )
     ((= m "Window")
@@ -1021,7 +1046,7 @@
                    mny (min (cadr p1) (cadr p2)) mxy (max (cadr p1) (cadr p2))
                    clip (list (list mnx mny) (list mxx mny)
                               (list mxx mxy) (list mnx mxy)))
-             (list clip clip))))))
+             (list (list clip clip)))))))
   )
 )
 
@@ -1097,58 +1122,23 @@
   (list cnt mnx mny mxx mxy)
 )
 
-;;; ---- main command ------------------------------------------------
+;;; ---- fill one panel ----------------------------------------------
+;;; Perforates a single boundary and returns the hole count, so the
+;;; command can run over as many panels as the user wants without
+;;; being restarted.
 
-(defun c:PERF
-    (/ *error* poly realverts bb width height cx cy
+(defun pf:fillone
+    (poly realverts
+     / bb width height cx cy
        lat ux uy vx vy rowang rowpitch grot ca0 sa0
        longIsX rowsAlongX rowsOnLong dec
        lverts cushion det margin hw2 hh2
        imin imax jmin jmax ii jj dx dy
        hx hy gap ixlo ixhi iylo iyhi isRect
        kbest ksteps ncand res bestox bestoy bres2 sx sy
-       i j px py count ans needsetup c bres pp follow)
+       i j px py count ans c pp follow)
 
-  (defun *error* (msg)
-    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
-      (princ (strcat "\n** PERF Error: " msg)))
-    (princ)
-  )
-
-  (pf:loadcfg)
-
-  ;; --- reuse or redefine the pattern ------------------------------
-  (setq needsetup T)
-  (if (pf:havecfg)
-    (progn
-      (if (= *perf-shape* "Austin")
-       (princ (strcat "\nCurrent pattern: Austin ellipses  bar="
-                      (rtos *perf-bar* 2 4)))
-       (princ (strcat "\nCurrent pattern: " *perf-shape*
-                     "  size=" (rtos *perf-size* 2 4)
-                     (if (member *perf-shape* '("Rectangle" "Slot"))
-                       (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
-                     "  spacing=" (rtos *perf-spacing* 2 4)
-                     "  rows=" (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
-                     "  angle=" *perf-angle*
-                     (if (and *perf-thick* (> *perf-thick* 0.0))
-                       (strcat "  material=" (rtos *perf-thick* 2 4)) ""))))
-      (initget "Continue Redefine")
-      (setq ans (getkword "\nUse this pattern? [Continue/Redefine] <Continue>: "))
-      (if (or (null ans) (= ans "Continue")) (setq needsetup nil))
-    )
-  )
-  (if needsetup
-    (pf:setup)
-    ;; reused pattern still gets verified against the stored thickness
-    (if (/= *perf-shape* "Austin") (pf:checkweb)))
-
-  ;; --- get the fill boundary --------------------------------------
-  (setq bres (pf:getboundary))
-  (if (null bres)
-    (progn (princ "\nNo fill area - command cancelled.") (exit)))
-  (setq poly (car bres) realverts (cadr bres))
-
+  (setq count 0)
   (setq bb (pf:bbox poly)
         width (- (caddr bb) (car bb))
         height (- (cadddr bb) (cadr bb))
@@ -1161,8 +1151,8 @@
    (progn
      (setq isRect (and realverts (pf:isaxisrect realverts))
            count  (pf:austin poly bb *perf-bar* isRect))
-     (princ (strcat "\nDone - " (itoa count)
-                    " Austin ellipses placed (bar "
+     (princ (strcat "\n  Panel done - " (itoa count)
+                    " Austin ellipses (bar "
                     (rtos *perf-bar* 2 4) "\").")))
 
    ;; ==== all lattice shapes ======================================
@@ -1191,7 +1181,10 @@
   )
 
   ;; --- orientation check (staggered 30/60, axis-aligned only) -----
-  (if (and (not follow) (member *perf-angle* '("30" "60")))
+  ;; *pf-skipwarn* is set once the user overrides, so a run covering
+  ;; many panels does not re-ask on every one.
+  (if (and (not follow) (not *pf-skipwarn*)
+           (member *perf-angle* '("30" "60")))
     (progn
       (setq longIsX (>= width height)
             rowsAlongX (= *perf-angle* "60")
@@ -1217,7 +1210,9 @@
               (setq *perf-angle* (if (= *perf-angle* "30") "60" "30"))
               (pf:savecfg)
               (princ (strcat "\nReoriented - angle is now " *perf-angle* ".")))
-            (princ "\nContinuing with the current orientation (override)."))
+            (progn
+              (setq *pf-skipwarn* T)
+              (princ "\nContinuing with the current orientation (override).")))
         )
       )
     )
@@ -1326,8 +1321,74 @@
       (setq j (1+ j)))
     (setq i (1+ i)))
 
-  (princ (strcat "\nDone - " (itoa count) " " *perf-shape* " hole(s) placed."))
+  (princ (strcat "\n  Panel done - " (itoa count) " " *perf-shape* " hole(s)."))
    ))
+  count
+)
+
+;;; ---- main command ------------------------------------------------
+
+(defun c:PERF
+    (/ *error* ans needsetup blist b total panels)
+
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** PERF Error: " msg)))
+    (princ)
+  )
+
+  (pf:loadcfg)
+  (setq *pf-skipwarn* nil total 0 panels 0)
+
+  ;; --- reuse or redefine the pattern ------------------------------
+  (setq needsetup T)
+  (if (pf:havecfg)
+    (progn
+      (if (= *perf-shape* "Austin")
+       (princ (strcat "\nCurrent pattern: Austin ellipses  bar="
+                      (rtos *perf-bar* 2 4)))
+       (princ (strcat "\nCurrent pattern: " *perf-shape*
+                     "  size=" (rtos *perf-size* 2 4)
+                     (if (member *perf-shape* '("Rectangle" "Slot"))
+                       (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
+                     "  spacing=" (rtos *perf-spacing* 2 4)
+                     "  rows=" (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
+                     "  angle=" *perf-angle*
+                     (if (and *perf-thick* (> *perf-thick* 0.0))
+                       (strcat "  material=" (rtos *perf-thick* 2 4)) ""))))
+      (initget "Continue Redefine")
+      (setq ans (getkword "\nUse this pattern? [Continue/Redefine] <Continue>: "))
+      (if (or (null ans) (= ans "Continue")) (setq needsetup nil))
+    )
+  )
+  (if needsetup
+    (pf:setup)
+    ;; reused pattern still gets verified against the stored thickness
+    (if (/= *perf-shape* "Austin") (pf:checkweb)))
+
+  ;; --- keep filling panels until the user is done -----------------
+  (setq ans "Yes")
+  (while ans
+    (setq blist (pf:getboundary))
+    (if (null blist)
+      (setq ans nil)                       ; cancelled selection ends it
+      (progn
+        (foreach b blist
+          (setq total  (+ total (pf:fillone (car b) (cadr b)))
+                panels (1+ panels)))
+        (initget "Yes Redefine No")
+        (setq ans (getkword
+                    "\nFill another panel? [Yes/Redefine/No] <Yes>: "))
+        (cond
+          ((= ans "No") (setq ans nil))
+          ((= ans "Redefine")
+           (pf:setup)
+           (setq *pf-skipwarn* nil ans "Yes"))
+          (T (setq ans "Yes")))))
+  )
+
+  (princ (strcat "\nFinished - " (itoa panels) " panel(s), "
+                 (itoa total) " total hole(s)."))
   (princ)
 )
 
