@@ -64,6 +64,7 @@
       (if (setq g (getcfg (strcat *perf-cfgroot* "RowPitch")))
         (setq *perf-rowpitch* (if (> (atof g) 0.0) (atof g) nil)))
       (if (setq g (getcfg (strcat *perf-cfgroot* "Bar")))     (setq *perf-bar*     (atof g)))
+      (if (setq g (getcfg (strcat *perf-cfgroot* "Orient")))  (setq *perf-orient*  g))
     )
   )
   (princ)
@@ -72,6 +73,8 @@
 (defun pf:savecfg ()
   (setcfg (strcat *perf-cfgroot* "Shape")   *perf-shape*)
   (setcfg (strcat *perf-cfgroot* "Bar")     (rtos (cond (*perf-bar*) (0.3)) 2 8))
+  (if (null *perf-orient*) (setq *perf-orient* "Horizontal"))
+  (setcfg (strcat *perf-cfgroot* "Orient")  *perf-orient*)
   (if (null *perf-size*)    (setq *perf-size* 0.5))
   (if (null *perf-spacing*) (setq *perf-spacing* 1.0))
   (if (null *perf-angle*)   (setq *perf-angle* "60"))
@@ -222,12 +225,41 @@
   )
 )
 
+;;; Rotation of the hole itself, before any edge-follow rotation.
+;;; Rectangles and slots are oriented by the user in world terms -
+;;; Horizontal or Vertical - independently of which way the rows run.
+;;; Every other shape stays aligned to its row, as the classic
+;;; patterns require (squares turn 45 in a 45 pattern, hexagons turn
+;;; with a 30 pattern, and so on).
+(defun pf:holeang (shape angle)
+  (if (member shape '("Rectangle" "Slot"))
+    (if (= (cond (*perf-orient*) ("Horizontal")) "Vertical") (/ pi 2.0) 0.0)
+    (nth 4 (pf:lattice angle 1.0 1.0)))
+)
+
+;;; Hole size measured in the row frame: (alongRows acrossRows).
+;;; Derived from the actual outline and orientation rather than from
+;;; the raw dimensions, so it stays right however the hole is turned.
+(defun pf:rowextents (shape size size2 angle / rel lv ca sa ex ey dx dy)
+  (setq rel (- (pf:holeang shape angle)
+               (nth 4 (pf:lattice angle 1.0 1.0)))
+        lv  (pf:localverts shape size size2)
+        ca  (cos rel) sa (sin rel) ex 0.0 ey 0.0)
+  (if lv
+    (foreach p lv
+      (setq dx (abs (- (* (car p) ca) (* (cadr p) sa)))
+            dy (abs (+ (* (car p) sa) (* (cadr p) ca))))
+      (if (> dx ex) (setq ex dx))
+      (if (> dy ey) (setq ey dy)))
+    (setq ex (* 0.5 size) ey (* 0.5 size)))    ; circle
+  (list (* 2.0 ex) (* 2.0 ey))
+)
+
 ;;; Hole extent across the rows divided by its extent along them.
-;;; 1.0 for the symmetric shapes, < 1 for rectangles and slots.
-(defun pf:aspect (shape size size2)
-  (if (and (member shape '("Rectangle" "Slot")) size2 (> size 0.0))
-    (/ size2 size)
-    1.0)
+;;; 1.0 for the symmetric shapes, other values for rectangles/slots.
+(defun pf:aspect (shape size size2 angle / e)
+  (setq e (pf:rowextents shape size size2 angle))
+  (if (> (car e) 0.0) (/ (cadr e) (car e)) 1.0)
 )
 
 ;;; Row pitch that reproduces the standard pattern proportions.
@@ -236,7 +268,7 @@
 ;;; driven by the hole's length.
 (defun pf:defaultrow (shape size size2 angle s)
   (* s
-     (pf:aspect shape size size2)
+     (pf:aspect shape size size2 angle)
      (if (member angle '("30" "60")) (sin (/ pi 3.0)) 1.0))
 )
 
@@ -600,7 +632,7 @@
   (setq lat (pf:lattice angle s tt)
         ux (nth 0 lat) uy (nth 1 lat)
         vx (nth 2 lat) vy (nth 3 lat)
-        ra (nth 4 lat) ca (cos ra) sa (sin ra)
+        ra (pf:holeang shape angle) ca (cos ra) sa (sin ra)
         lv (pf:localverts shape size size2)
         v2 '())
   (if lv
@@ -800,16 +832,17 @@
   )
 )
 
-;;; Prompt text for the first of the two-value shapes.
+;;; Prompt text for the two-value shapes.  For a rectangle the pair is
+;;; the hole's height and width as drawn at Horizontal orientation;
+;;; for a slot it is the overall length along its axis and its width.
 (defun pf:lenprompt (shape)
   (cond
-    ((= shape "Rectangle") "\nRectangle length (in) <")
+    ((= shape "Rectangle") "\nRectangle height (in) <")
     ((= shape "Slot")      "\nSlot overall length (in, includes end caps) <")
-    (T "\nHole length (in) <")
+    (T "\nHole height (in) <")
   )
 )
 
-;;; Prompt text for the second of the two-value shapes.
 (defun pf:widprompt (shape)
   (cond
     ((= shape "Rectangle") "\nRectangle width (in) <")
@@ -842,18 +875,42 @@
    (progn
   (cond
     ((member *perf-shape* '("Rectangle" "Slot"))
+     ;; Rectangle: height then width, as drawn at Horizontal.
+     ;; Slot: overall length along its axis, then width.
+     ;; *perf-size* is the hole's own long axis (local X), *perf-size2*
+     ;; the short one, so a rectangle stores width in size and height
+     ;; in size2 while a slot stores length in size.
      (initget 6)
      (setq tmp (getdist (strcat (pf:lenprompt *perf-shape*)
-                                (rtos (cond (*perf-size*) (1.0)) 2 4) ">: ")))
-     (if tmp (setq *perf-size* tmp) (if (null *perf-size*) (setq *perf-size* 1.0)))
+                                (rtos (cond ((if (= *perf-shape* "Rectangle")
+                                               *perf-size2* *perf-size*))
+                                            (1.0)) 2 4) ">: ")))
+     (if (= *perf-shape* "Rectangle")
+       (progn (if tmp (setq *perf-size2* tmp))
+              (if (null *perf-size2*) (setq *perf-size2* 0.5)))
+       (progn (if tmp (setq *perf-size* tmp))
+              (if (null *perf-size*) (setq *perf-size* 1.0))))
      (initget 6)
      (setq tmp (getdist (strcat (pf:widprompt *perf-shape*)
-                                (rtos (cond (*perf-size2*) (0.5)) 2 4) ">: ")))
-     (if tmp (setq *perf-size2* tmp) (if (null *perf-size2*) (setq *perf-size2* 0.5)))
+                                (rtos (cond ((if (= *perf-shape* "Rectangle")
+                                               *perf-size* *perf-size2*))
+                                            (0.5)) 2 4) ">: ")))
+     (if (= *perf-shape* "Rectangle")
+       (progn (if tmp (setq *perf-size* tmp))
+              (if (null *perf-size*) (setq *perf-size* 1.0)))
+       (progn (if tmp (setq *perf-size2* tmp))
+              (if (null *perf-size2*) (setq *perf-size2* 0.5))))
      (if (and (= *perf-shape* "Slot") (<= *perf-size* *perf-size2*))
        (progn
          (princ "\nSlot length must exceed its width - using width x 2.")
-         (setq *perf-size* (* 2.0 *perf-size2*)))))
+         (setq *perf-size* (* 2.0 *perf-size2*))))
+     ;; Which way the hole sits, independent of the row direction.
+     (initget "Horizontal Vertical")
+     (setq tmp (getkword
+                 (strcat "\nHole orientation [Horizontal/Vertical] <"
+                         (cond (*perf-orient*) ("Horizontal")) ">: ")))
+     (if tmp (setq *perf-orient* tmp)
+             (if (null *perf-orient*) (setq *perf-orient* "Horizontal"))))
     (T
      (initget 6)
      (setq tmp (getdist (strcat (pf:sizeprompt *perf-shape*)
@@ -866,20 +923,26 @@
                              (rtos (cond (*perf-thick*) (0.0625)) 2 4) ">: ")))
   (if tmp (setq *perf-thick* tmp) (if (null *perf-thick*) (setq *perf-thick* 0.0625)))
 
-  (initget 6)
-  (setq tmp (getdist (strcat "\nSpacing center-to-center (in) <"
-                             (rtos (cond (*perf-spacing*) (1.0)) 2 4) ">: ")))
-  (if tmp (setq *perf-spacing* tmp) (if (null *perf-spacing*) (setq *perf-spacing* 1.0)))
-
   (initget "Straight 30 45 60")
   (setq tmp (getkword (strcat "\nPattern angle [Straight/30/45/60] <"
                               (cond (*perf-angle*) ("60")) ">: ")))
   (if tmp (setq *perf-angle* tmp) (if (null *perf-angle*) (setq *perf-angle* "60")))
 
+  ;; Both pitches are asked for explicitly.  In a Straight pattern the
+  ;; first is the column spacing and the second the row spacing.
+  (initget 6)
+  (setq tmp (getdist (strcat (if (= *perf-angle* "Straight")
+                               "\nColumn spacing - center-to-center along each row (in) <"
+                               "\nSpacing along each row, center-to-center (in) <")
+                             (rtos (cond (*perf-spacing*) (1.0)) 2 4) ">: ")))
+  (if tmp (setq *perf-spacing* tmp) (if (null *perf-spacing*) (setq *perf-spacing* 1.0)))
+
   ;; Row pitch: Auto keeps the standard pattern proportions (and packs
   ;; long holes tightly across the rows) while honouring the bar rule.
   (initget "Auto")
-  (setq tmp (getdist (strcat "\nSpacing between rows (in) or [Auto] <"
+  (setq tmp (getdist (strcat (if (= *perf-angle* "Straight")
+                               "\nRow spacing - center-to-center between rows (in) or [Auto] <"
+                               "\nSpacing between rows, center-to-center (in) or [Auto] <")
                              (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
                              ">: ")))
   (cond
@@ -1223,7 +1286,7 @@
         lat (pf:lattice *perf-angle* *perf-spacing* rowpitch)
         ux (nth 0 lat) uy (nth 1 lat)
         vx (nth 2 lat) vy (nth 3 lat)
-        rowang (+ (nth 4 lat) grot)
+        rowang (+ (pf:holeang *perf-shape* *perf-angle*) grot)
         lverts (pf:localverts *perf-shape* *perf-size* *perf-size2*)
         cushion (pf:circumr *perf-shape* *perf-size* *perf-size2*))
   ;; rotate the lattice vectors by grot (0 unless following an edge)
@@ -1348,9 +1411,16 @@
        (princ (strcat "\nCurrent pattern: Austin ellipses  bar="
                       (rtos *perf-bar* 2 4)))
        (princ (strcat "\nCurrent pattern: " *perf-shape*
-                     "  size=" (rtos *perf-size* 2 4)
-                     (if (member *perf-shape* '("Rectangle" "Slot"))
-                       (strcat " x " (rtos (cond (*perf-size2*) (0.0)) 2 4)) "")
+                     (cond
+                       ((= *perf-shape* "Rectangle")
+                        (strcat "  H=" (rtos (cond (*perf-size2*) (0.0)) 2 4)
+                                " W="  (rtos *perf-size* 2 4)
+                                " "    (cond (*perf-orient*) ("Horizontal"))))
+                       ((= *perf-shape* "Slot")
+                        (strcat "  L=" (rtos *perf-size* 2 4)
+                                " W="  (rtos (cond (*perf-size2*) (0.0)) 2 4)
+                                " "    (cond (*perf-orient*) ("Horizontal"))))
+                       (T (strcat "  size=" (rtos *perf-size* 2 4))))
                      "  spacing=" (rtos *perf-spacing* 2 4)
                      "  rows=" (if *perf-rowpitch* (rtos *perf-rowpitch* 2 4) "Auto")
                      "  angle=" *perf-angle*
