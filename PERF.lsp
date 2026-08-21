@@ -226,15 +226,16 @@
 )
 
 ;;; Rotation of the hole itself, before any edge-follow rotation.
-;;; Rectangles and slots are oriented by the user in world terms -
-;;; Horizontal or Vertical - independently of which way the rows run.
-;;; Every other shape stays aligned to its row, as the classic
-;;; patterns require (squares turn 45 in a 45 pattern, hexagons turn
-;;; with a 30 pattern, and so on).
+;;; Holes NEVER rotate with the pattern angle - the angle changes how
+;;; the holes are arranged, not how each one sits.  A square stays
+;;; square-on in a 45 pattern and a hexagon keeps its orientation in a
+;;; 30 pattern.  Rectangles and slots are turned only by the user's
+;;; explicit Horizontal / Vertical choice.
 (defun pf:holeang (shape angle)
-  (if (member shape '("Rectangle" "Slot"))
-    (if (= (cond (*perf-orient*) ("Horizontal")) "Vertical") (/ pi 2.0) 0.0)
-    (nth 4 (pf:lattice angle 1.0 1.0)))
+  (if (and (member shape '("Rectangle" "Slot"))
+           (= (cond (*perf-orient*) ("Horizontal")) "Vertical"))
+    (/ pi 2.0)
+    0.0)
 )
 
 ;;; Hole size measured in the row frame: (alongRows acrossRows).
@@ -255,11 +256,13 @@
   (list (* 2.0 ex) (* 2.0 ey))
 )
 
-;;; Hole extent across the rows divided by its extent along them.
-;;; 1.0 for the symmetric shapes, other values for rectangles/slots.
+;;; Hole extent across the rows divided by its extent along them,
+;;; never above 1.0.  A hole that is short across the rows may pull
+;;; them closer together; one that is wide across them must not push
+;;; them apart - the bar rule alone decides how far apart they go.
 (defun pf:aspect (shape size size2 angle / e)
   (setq e (pf:rowextents shape size size2 angle))
-  (if (> (car e) 0.0) (/ (cadr e) (car e)) 1.0)
+  (if (> (car e) 0.0) (min 1.0 (/ (cadr e) (car e))) 1.0)
 )
 
 ;;; Row pitch that reproduces the standard pattern proportions.
