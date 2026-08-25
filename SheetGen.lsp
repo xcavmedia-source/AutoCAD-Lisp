@@ -222,11 +222,18 @@
 ;;                     never on the list to restore. If the source was locked, the whole batch is locked                          ;;
 ;;                     at the end                                                                                                 ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.19: Lock handling narrowed to the sheet viewport                                                                 ;;
+;;                   - Only the sheet viewport, the largest one on the paper, is ever panned, so only that                        ;;
+;;                     one is unlocked and locked again. v1.18 released every viewport on the sheet and                           ;;
+;;                     locked the lot at the end, which meant touching viewports this routine never moves                         ;;
+;;                     and could leave a small viewport locked that the drawing had deliberately left open                        ;;
+;;                   - Smaller viewports on a title block sheet are now left exactly as the drawing has them                      ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.18")
+(setq sheetgenversion "1.19")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -530,47 +537,49 @@
                             (if state :vlax-true :vlax-false)))
 )
 
-;;; T when any viewport in LNAME has its display locked.
-(defun sg:LayoutLocked (lname)
-  (if (vl-some 'sg:VpLockedP (sg:Viewports lname)) T nil)
+;;; Everything below deals only with the sheet viewport - the largest one on the
+;;; paper, the one that gets panned.  Smaller viewports on a title block sheet
+;;; are never moved, so their lock state is none of this routine's business and
+;;; is left exactly as the drawing had it.
+
+;;; T when the sheet viewport in LNAME has its display locked.
+(defun sg:SheetVpLocked (lname / e)
+  (if (setq e (sg:MainViewport lname)) (sg:VpLockedP e))
 )
 
-;;; Release every display locked viewport in LNAME and return how many were
-;;; released, remembering each by entity name so the same ones can be locked
-;;; again afterwards.
+;;; Release the sheet viewport in LNAME if it is locked, remembering it so the
+;;; same one is locked again at the end of the run.  Returns T when the viewport
+;;; is free to pan.
 ;;;
 ;;; This matters more than it looks.  A display locked viewport does not refuse
 ;;; a pan - AutoCAD applies the pan to paper space instead, so the sheet itself
-;;; moves and the view does not.  The unlock is verified rather than assumed,
-;;; because a pan attempted on a viewport that is still locked damages the sheet.
-(defun sg:UnlockLayout (lname / n)
-  (setq n 0)
-  (foreach e (sg:Viewports lname)
-    (if (sg:VpLockedP e)
-      (progn
-        (sg:VpSetLock e nil)
-        (if (sg:VpLockedP e)
-          (princ (strcat "\n   ** a viewport in \"" lname "\" will not unlock"))
-          (setq *sg:unlocked* (cons e *sg:unlocked*)
-                n             (1+ n))
+;;; moves and the view does not.  The release is verified rather than assumed,
+;;; because panning a viewport that is still locked damages the sheet.
+(defun sg:UnlockSheetVp (lname / e)
+  (if (setq e (sg:MainViewport lname))
+    (progn
+      (if (sg:VpLockedP e)
+        (progn
+          (sg:VpSetLock e nil)
+          (if (not (sg:VpLockedP e))
+            (setq *sg:unlocked* (cons e *sg:unlocked*))
+          )
         )
       )
+      (not (sg:VpLockedP e))
     )
   )
-  n
 )
 
-;;; Lock every viewport in NAMELIST that is not locked already, returning the
-;;; count.  Sheets copied from an already released source are created unlocked,
-;;; so they are never on the list of viewports to restore and have to be locked
-;;; explicitly at the end of the run.
-(defun sg:LockLayouts (namelist / n)
+;;; Lock the sheet viewport of each layout in NAMELIST that is not locked
+;;; already, returning the count.  Sheets copied from an already released source
+;;; are created unlocked, so they never appear on the list of viewports to
+;;; restore and have to be locked explicitly at the end of the run.
+(defun sg:LockSheetVps (namelist / n e)
   (setq n 0)
   (foreach nm namelist
-    (foreach e (sg:Viewports nm)
-      (if (not (sg:VpLockedP e))
-        (progn (sg:VpSetLock e T) (setq n (1+ n)))
-      )
+    (if (and (setq e (sg:MainViewport nm)) (not (sg:VpLockedP e)))
+      (progn (sg:VpSetLock e T) (setq n (1+ n)))
     )
   )
   n
@@ -710,13 +719,12 @@
      (if (/= (strcase (getvar "CTAB")) (strcase lname))
        (princ (strcat "\n   ** could not open layout \"" lname "\" - view left alone"))
        (progn
-         ;; Release every locked viewport on this sheet before going anywhere
-         ;; near a pan, and confirm the sheet viewport really did unlock.  A
-         ;; locked viewport does not refuse a pan: AutoCAD sends the pan to
-         ;; paper space, so the sheet moves and the view does not.  Panning one
-         ;; that is still locked damages the sheet, so it is not attempted.
-         (sg:UnlockLayout lname)
-         (if (sg:VpLockedP (sg:MainViewport lname))
+         ;; Release the sheet viewport before going anywhere near a pan, and
+         ;; confirm it really did unlock.  A locked viewport does not refuse a
+         ;; pan: AutoCAD sends the pan to paper space, so the sheet moves and
+         ;; the view does not.  Panning one that is still locked damages the
+         ;; sheet, so it is not attempted.
+         (if (not (sg:UnlockSheetVp lname))
            (princ (strcat "\n   ** the viewport in \"" lname "\" is display locked"
                           " and would not unlock."
                           "\n      Not panned - panning a locked viewport moves the"
@@ -1517,15 +1525,14 @@
 
   ;; Check the lock before a single sheet is made.  A display locked viewport
   ;; does not pan - the pan goes to paper space and moves the sheet instead - so
-  ;; the source is released now, before anything is copied from it, and every
-  ;; sheet is locked again at the end of the run.
-  (setq srclocked (sg:LayoutLocked src))
+  ;; the source sheet viewport is released now, before anything is copied from
+  ;; it, and the batch is locked again at the end of the run.
+  (setq srclocked (sg:SheetVpLocked src))
   (if srclocked
     (progn
       (princ (strcat "\nThe viewport in \"" src "\" is display locked. Releasing it so"
-                     "\nthe views can be panned; every sheet is locked again at the end."))
-      (sg:UnlockLayout src)
-      (if (sg:LayoutLocked src)
+                     "\nthe views can be panned; the sheets are locked again at the end."))
+      (if (not (sg:UnlockSheetVp src))
         (princ "\n** It would not unlock. The sheets will not pan correctly.")
       )
     )
@@ -1596,7 +1603,7 @@
   ;; created unlocked and are not on that list, so lock those explicitly too.
   (setq relocked (sg:RelockAll))
   (if srclocked
-    (setq relocked (+ relocked (sg:LockLayouts finalnames)))
+    (setq relocked (+ relocked (sg:LockSheetVps finalnames)))
   )
 
   (if (and (> made 0) lastactual)
