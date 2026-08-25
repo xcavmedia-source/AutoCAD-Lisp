@@ -211,11 +211,22 @@
 ;;                     reliably place a copy immediately after the layout it was made from, which left                            ;;
 ;;                     the odd sheet out of sequence in the tab bar                                                               ;;
 ;;                                                                                                                                ;;
+;;  8/13/26 - v1.18: Display locks handled up front and verified                                                                  ;;
+;;                   - The source viewport is checked and released before any sheet is created, rather                            ;;
+;;                     than each sheet being dealt with as it is reached                                                          ;;
+;;                   - Every viewport on a sheet is released, not only the largest one                                            ;;
+;;                   - The release is verified. A viewport that will not unlock is now left unpanned and                          ;;
+;;                     reported: a locked viewport does not refuse a pan, AutoCAD sends the pan to paper                          ;;
+;;                     space instead, so the sheet moves and the view does not                                                    ;;
+;;                   - Sheets copied from an already released source are created unlocked and so were                             ;;
+;;                     never on the list to restore. If the source was locked, the whole batch is locked                          ;;
+;;                     at the end                                                                                                 ;;
+;;                                                                                                                                ;;
 ;;********************************************************************************************************************************;;
 
 (vl-load-com)
 
-(setq sheetgenversion "1.17")
+(setq sheetgenversion "1.18")
 
 
 ;;;-----------------------------------------------------------------------------------------------;;
@@ -519,6 +530,52 @@
                             (if state :vlax-true :vlax-false)))
 )
 
+;;; T when any viewport in LNAME has its display locked.
+(defun sg:LayoutLocked (lname)
+  (if (vl-some 'sg:VpLockedP (sg:Viewports lname)) T nil)
+)
+
+;;; Release every display locked viewport in LNAME and return how many were
+;;; released, remembering each by entity name so the same ones can be locked
+;;; again afterwards.
+;;;
+;;; This matters more than it looks.  A display locked viewport does not refuse
+;;; a pan - AutoCAD applies the pan to paper space instead, so the sheet itself
+;;; moves and the view does not.  The unlock is verified rather than assumed,
+;;; because a pan attempted on a viewport that is still locked damages the sheet.
+(defun sg:UnlockLayout (lname / n)
+  (setq n 0)
+  (foreach e (sg:Viewports lname)
+    (if (sg:VpLockedP e)
+      (progn
+        (sg:VpSetLock e nil)
+        (if (sg:VpLockedP e)
+          (princ (strcat "\n   ** a viewport in \"" lname "\" will not unlock"))
+          (setq *sg:unlocked* (cons e *sg:unlocked*)
+                n             (1+ n))
+        )
+      )
+    )
+  )
+  n
+)
+
+;;; Lock every viewport in NAMELIST that is not locked already, returning the
+;;; count.  Sheets copied from an already released source are created unlocked,
+;;; so they are never on the list of viewports to restore and have to be locked
+;;; explicitly at the end of the run.
+(defun sg:LockLayouts (namelist / n)
+  (setq n 0)
+  (foreach nm namelist
+    (foreach e (sg:Viewports nm)
+      (if (not (sg:VpLockedP e))
+        (progn (sg:VpSetLock e T) (setq n (1+ n)))
+      )
+    )
+  )
+  n
+)
+
 ;;; Put NAMELIST at the end of the tab bar, in the order given.  LAYOUT Copy
 ;;; does not reliably place a copy immediately after the layout it came from,
 ;;; so tab order is set outright rather than relying on where copies landed.
@@ -653,56 +710,61 @@
      (if (/= (strcase (getvar "CTAB")) (strcase lname))
        (princ (strcat "\n   ** could not open layout \"" lname "\" - view left alone"))
        (progn
-         ;; a display locked viewport will not pan
-         (setq e (sg:MainViewport lname))
-         (if (sg:VpLockedP e)
+         ;; Release every locked viewport on this sheet before going anywhere
+         ;; near a pan, and confirm the sheet viewport really did unlock.  A
+         ;; locked viewport does not refuse a pan: AutoCAD sends the pan to
+         ;; paper space, so the sheet moves and the view does not.  Panning one
+         ;; that is still locked damages the sheet, so it is not attempted.
+         (sg:UnlockLayout lname)
+         (if (sg:VpLockedP (sg:MainViewport lname))
+           (princ (strcat "\n   ** the viewport in \"" lname "\" is display locked"
+                          " and would not unlock."
+                          "\n      Not panned - panning a locked viewport moves the"
+                          " sheet, not the view."))
            (progn
-             (sg:VpSetLock e nil)
-             (setq *sg:unlocked* (cons e *sg:unlocked*))
+             ;; MSPACE is what crosses from paper space into a viewport; setting
+             ;; CVPORT alone does not do it.  It also opens the layout properly.
+             (command "_.MSPACE")
+
+             ;; Read the viewport only now.  A layout that has just been copied
+             ;; has never been opened, and its stored view centre is not
+             ;; dependable until it has been.  Reading it any earlier measured
+             ;; the displacement from the wrong place, which left every copied
+             ;; sheet mispositioned while the source sheet came out right.
+             (setq e   (sg:MainViewport lname)
+                   ed  (entget e)
+                   vid (sg:Int (cdr (assoc 69 ed)) nil)
+                   hgt (sg:Num (cdr (assoc 45 ed)) nil)
+                   ctr (cdr (assoc 12 ed)))
+
+             (if (and vid (/= (sg:Int (getvar "CVPORT") 0) vid))
+               (vl-catch-all-apply 'setvar (list "CVPORT" vid))
+             )
+
+             ;; CVPORT 1 means we are still in paper space, where a pan would
+             ;; move the sheet instead of the view inside the viewport
+             (if (= 1 (sg:Int (getvar "CVPORT") 1))
+               (princ "\n   ** could not enter the viewport - view left alone")
+               (progn
+                 ;; PAN, not ZOOM.  The sheet already carries its viewport scale
+                 ;; and nothing here should alter it: panning moves the view and
+                 ;; cannot change the scale, whereas ZOOM takes a height and can.
+                 (setq d (list (- (car ctr) (car tgt))
+                               (- (cadr ctr) (cadr tgt))
+                               0.0))
+                 (princ (strcat "\n   position " (itoa pos) ": "
+                                (rtos (car ctr) 2 2) "," (rtos (cadr ctr) 2 2) " -> "
+                                (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
+                 (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
+                 (sg:ClearCmd)
+                 (setq ok T)
+                 (sg:CheckView e tgt hgt)
+               )
+             )
+             (command "_.PSPACE")
+             (if (/= 1 (sg:Int (getvar "CVPORT") 1)) (setvar "CVPORT" 1))
            )
          )
-
-         ;; MSPACE is what crosses from paper space into a viewport; setting
-         ;; CVPORT alone does not do it.  It also opens the layout properly.
-         (command "_.MSPACE")
-
-         ;; Read the viewport only now.  A layout that has just been copied has
-         ;; never been opened, and its stored view centre is not dependable
-         ;; until it has been.  Reading it any earlier measured the displacement
-         ;; from the wrong place, which left every copied sheet mispositioned
-         ;; while the source sheet, already open, came out right.
-         (setq e   (sg:MainViewport lname)
-               ed  (entget e)
-               vid (sg:Int (cdr (assoc 69 ed)) nil)
-               hgt (sg:Num (cdr (assoc 45 ed)) nil)
-               ctr (cdr (assoc 12 ed)))
-
-         (if (and vid (/= (sg:Int (getvar "CVPORT") 0) vid))
-           (vl-catch-all-apply 'setvar (list "CVPORT" vid))
-         )
-
-         ;; CVPORT 1 means we are still in paper space, where a pan would move
-         ;; the sheet instead of the view inside the viewport
-         (if (= 1 (sg:Int (getvar "CVPORT") 1))
-           (princ "\n   ** could not enter the viewport - view left alone")
-           (progn
-             ;; PAN, not ZOOM.  The sheet already carries its viewport scale and
-             ;; nothing here should alter it: panning moves the view and cannot
-             ;; change the scale, whereas ZOOM takes a height and can.
-             (setq d (list (- (car ctr) (car tgt))
-                           (- (cadr ctr) (cadr tgt))
-                           0.0))
-             (princ (strcat "\n   position " (itoa pos) ": "
-                            (rtos (car ctr) 2 2) "," (rtos (cadr ctr) 2 2) " -> "
-                            (rtos (car tgt) 2 2) "," (rtos (cadr tgt) 2 2)))
-             (command "_.-PAN" "_non" '(0.0 0.0 0.0) "_non" d)
-             (sg:ClearCmd)
-             (setq ok T)
-             (sg:CheckView e tgt hgt)
-           )
-         )
-         (command "_.PSPACE")
-         (if (/= 1 (sg:Int (getvar "CVPORT") 1)) (setvar "CVPORT" 1))
        )
      )
     )
@@ -1409,7 +1471,7 @@
 ;;; "reuse" is on (which is what turns the tab you added on the end into sheet 1).
 (defun sg:Generate (cfg names / cols hspace vspace src srcpos firstpos reuse
                                 cur curpos i n tmp target ok made relocked basectr basepos
-                                pending p r lastactual placed finalnames)
+                                pending p r lastactual placed finalnames srclocked)
   (setq cols     (sg:Int (cdr (assoc 'cols     cfg)) 1)
         hspace   (cdr (assoc 'hspace cfg))
         vspace   (cdr (assoc 'vspace cfg))
@@ -1451,6 +1513,22 @@
                    " at grid position " (itoa basepos) "."))
     (princ (strcat "\n** No viewport found in \"" src
                    "\" - sheets will be created but not positioned."))
+  )
+
+  ;; Check the lock before a single sheet is made.  A display locked viewport
+  ;; does not pan - the pan goes to paper space and moves the sheet instead - so
+  ;; the source is released now, before anything is copied from it, and every
+  ;; sheet is locked again at the end of the run.
+  (setq srclocked (sg:LayoutLocked src))
+  (if srclocked
+    (progn
+      (princ (strcat "\nThe viewport in \"" src "\" is display locked. Releasing it so"
+                     "\nthe views can be panned; every sheet is locked again at the end."))
+      (sg:UnlockLayout src)
+      (if (sg:LayoutLocked src)
+        (princ "\n** It would not unlock. The sheets will not pan correctly.")
+      )
+    )
   )
 
   ;; Optionally turn the source layout itself into the first sheet of the batch
@@ -1513,8 +1591,13 @@
   ;; Sit them at the end of the tab bar in grid order
   (if finalnames (sg:OrderTabs finalnames))
 
-  ;; Lock again exactly the viewports that were unlocked to allow panning
+  ;; Lock again exactly the viewports that were released for panning.  When the
+  ;; source was locked, the sheets copied from it after it was released were
+  ;; created unlocked and are not on that list, so lock those explicitly too.
   (setq relocked (sg:RelockAll))
+  (if srclocked
+    (setq relocked (+ relocked (sg:LockLayouts finalnames)))
+  )
 
   (if (and (> made 0) lastactual)
     (progn
