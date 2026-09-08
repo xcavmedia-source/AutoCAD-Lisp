@@ -323,9 +323,11 @@
   )
 )
 
-;;; Draw a closed rectangle on EXT's corners, carrying over the layer,
-;;; colour, linetype and lineweight of SRC.
-(defun pc:mkrect (space ext src / arr obj)
+;;; Draw a closed rectangle on EXT's corners, on layer LAY and taking
+;;; its appearance from that layer. The outline it stands in for may be
+;;; carrying a type colour from an earlier PANELCOMP run, which is not
+;;; something to copy onto a fresh panel outline.
+(defun pc:mkrect (space ext lay / arr obj)
   (setq arr (vlax-make-safearray vlax-vbDouble '(0 . 7)))
   (vlax-safearray-fill arr
     (list (car  (car  ext)) (cadr (car  ext))
@@ -334,10 +336,9 @@
           (car  (car  ext)) (cadr (cadr ext))))
   (setq obj (vla-addlightweightpolyline space (vlax-make-variant arr)))
   (vla-put-closed obj :vlax-true)
-  (foreach prp '(Layer Color Linetype Lineweight)
-    (vl-catch-all-apply
-      'vlax-put-property
-      (list obj prp (vlax-get-property src prp))))
+  (if lay (vl-catch-all-apply 'vla-put-layer (list obj lay)))
+  (vl-catch-all-apply 'vla-put-color    (list obj 256))
+  (vl-catch-all-apply 'vla-put-linetype (list obj "ByLayer"))
   obj
 )
 
@@ -501,7 +502,7 @@
        ent obj bb cx cy eps hit orphans dupes empty ext boxed ans tags
        taglay
        hmap emap curidx cursigs curents
-       sigs raw pw ph gkey groups g grp col cidx ncol locked
+       sigs raw pw ph gkey groups g grp col cidx ncol locked nin q
        total ins-pt txtht mtext-obj content-str n)
 
   ;;; Local error handler - closes the undo group on cancel or error
@@ -541,17 +542,22 @@
                      "\" in that selection."))
       (exit)))
 
-  ;;; --- drop any outline that wraps other outlines ---------------
+  ;;; --- drop any outline that wraps the others -------------------
   ;;; A border drawn around the whole sheet lives on the same layer as
-  ;;; the panels; it is recognised by the panels sitting inside it.
+  ;;; the panels, and is recognised by the panels sitting inside it.
+  ;;; It takes two: a border holds the whole run, while a panel with one
+  ;;; stray piece of line left inside it holds one, and dropping that
+  ;;; would quietly lose a real panel - it would come back uncoloured,
+  ;;; untagged and uncounted, which is worse than a border kept.
   (setq panels '() wrappers 0)
   (foreach p cands
-    (if (vl-some
-          '(lambda (q)
-             (and (not (equal q p))
-                  (pc:contains (cadr p) (cadr q))
-                  (< (pc:bbarea (cadr q)) (* 0.99 (pc:bbarea (cadr p))))))
-          cands)
+    (setq nin 0)
+    (foreach q cands
+      (if (and (not (equal q p))
+               (pc:contains (cadr p) (cadr q))
+               (< (pc:bbarea (cadr q)) (* 0.99 (pc:bbarea (cadr p)))))
+        (setq nin (1+ nin))))
+    (if (> nin 1)
       (setq wrappers (1+ wrappers))
       (setq panels (cons p panels))))
 
@@ -748,7 +754,10 @@
     (setq content-str
           (strcat content-str "\\P\\P"
                   "  NOTE: " (itoa wrappers)
-                  " outline(s) skipped - they enclose other panels.")))
+                  " outline(s) skipped as sheet borders - each encloses"
+                  " two or more panels. A real panel that came back"
+                  " uncoloured and untagged is one of these: something"
+                  " else on the panel layer is sitting inside it.")))
   (if (> orphans 0)
     (setq content-str
           (strcat content-str "\\P\\P"
@@ -775,6 +784,11 @@
           (strcat content-str "\\P\\P"
                   "  " (itoa tags) " panel(s) tagged on layer "
                   *pc:tag-layer* ".")))
+  (if (and (= ans "Yes") (< tags total))
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  NOTE: " (itoa (- total tags))
+                  " panel(s) could not be tagged.")))
   (if (> locked 0)
     (setq content-str
           (strcat content-str "\\P\\P"
@@ -863,7 +877,7 @@
 ;;; holding on to; the new rectangle is drawn either way.
 
 (defun c:PANELCLOSE (/ *error* acadobj doc space lay ss split outs
-                       p ents ext src ans built skipped)
+                       p ents ext ans built skipped)
 
   (defun *error* (msg)
     (if doc (vla-endundomark doc))
@@ -903,9 +917,8 @@
     ;;; than none.
     (if ext
       (progn
-        (setq src (vlax-ename->vla-object (car ents)))
         (if (vl-catch-all-error-p
-              (vl-catch-all-apply 'pc:mkrect (list space ext src)))
+              (vl-catch-all-apply 'pc:mkrect (list space ext lay)))
           (setq skipped (1+ skipped))
           (progn
             (if (= ans "Yes")
@@ -915,7 +928,8 @@
 
   (vla-endundomark doc)
   (princ (strcat "\nRebuilt " (itoa built)
-                 " outline(s) as closed rectangles on their real corners."))
+                 " outline(s) as closed rectangles on their real corners,"
+                 " on layer \"" lay "\"."))
   (if (= ans "Yes")
     (princ " Old geometry deleted.")
     (princ " Old geometry kept - erase it once you have checked the sizes."))

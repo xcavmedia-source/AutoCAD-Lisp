@@ -29,7 +29,7 @@ print("\nresults")
 check("three types, most common first", types_in(r['text']),
       [('10', 3, 5), ('130', 2, 4), ('70', 1, 5)])
 check("the border is skipped as a wrapper",
-      any('enclose other panels' in n for n in notes(r['text'])), True)
+      any('sheet border' in n for n in notes(r['text'])), True)
 
 colours = {}
 for e in ents:

@@ -110,6 +110,8 @@ check("on the panel's real corners, not the overshoot",
       [built[0].bbox[0][:2], built[0].bbox[1][:2]], [[0.0, 0.0], [24.0, 96.0]])
 check("the original lines are kept by default",
       len([e for e in ents if e.type == "LINE"]), 4)
+check("drawn on the panel layer", built[0].layer, PANEL_LAYER)
+check("and left ByLayer, not carrying a type colour", built[0].color, 256)
 
 print("\nPANELCLOSE deletes the old geometry when told to")
 ents = [e for e in over] + holes[:]
@@ -126,6 +128,26 @@ check("one tag per panel", len(tags), 2)
 check("both read T1", sorted(e.text for e in tags), ["T1", "T1"])
 check("tags land on their own layer",
       set(e.layer for e in tags), {"PANEL-TYPE"})
+
+print("\na stray piece inside a panel does not get the panel dropped")
+ents = sheet([A, A])
+# a short line left lying inside panel 1, on the panel layer
+ents.append(rect_lines(4, 20, 8, 20.001)[0])
+r = run(ents)
+check("both panels still counted and grouped", types_in(r['text'])[0],
+      ('10', 2, 5))
+check("neither was written off as a border",
+      any('sheet border' in n for n in notes(r['text'])), False)
+# the stray itself surfaces as an empty panel rather than vanishing
+check("the stray is reported instead",
+      any('no perforations at all' in n for n in notes(r['text'])), True)
+
+print("\na real sheet border, holding every panel, is still dropped")
+ents = sheet([A, A, A])
+ents.append(rect_poly(-5, -5, 95, 101))
+r = run(ents)
+check("three panels, one type", types_in(r['text']), [('10', 3, 5)])
+check("border reported", any('sheet border' in n for n in notes(r['text'])), True)
 
 print("\na fragment of outline is reported, not passed off as a panel")
 stray = rect_lines(500, 0, 500.001, 40)[1]          # one loose edge line

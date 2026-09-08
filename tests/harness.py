@@ -166,6 +166,7 @@ def load_env(ents=None, mtext_out=None, answers=None):
          lambda a: {'layer': a[0].layer, 'color': a[0].color,
                     'linetype': 'Continuous', 'lineweight': -1}.get(a[1]))
     stub('vlax-put-property', lambda a: None)
+    stub('vla-put-linetype', lambda a: setattr(a[0], 'linetype', a[1]))
     stub('getvar',   lambda a: {'TILEMODE': 1, 'CVPORT': 2, 'TEXTSIZE': 2.5}[a[0]])
     stub('getpoint', lambda a: [0.0, 0.0, 0.0])
     stub('vlax-3d-point', lambda a: a[0] if len(a) == 1 else list(a))
