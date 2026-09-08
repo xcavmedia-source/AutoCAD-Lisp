@@ -127,6 +127,13 @@ check("both read T1", sorted(e.text for e in tags), ["T1", "T1"])
 check("tags land on their own layer",
       set(e.layer for e in tags), {"PANEL-TYPE"})
 
+print("\na fragment of outline is reported, not passed off as a panel")
+stray = rect_lines(500, 0, 500.001, 40)[1]          # one loose edge line
+r = run(sheet([A, A]) + [stray])
+check("the fragment shows up as an empty panel",
+      any('no perforations at all' in n for n in notes(r['text'])), True)
+check("and the real panels still grouped", types_in(r['text'])[0], ('10', 2, 5))
+
 print("\nPANELRESET clears the tags as well as the colours")
 run(ents, command='c:panelreset')
 check("tags erased", [e for e in ents if e.type == "TEXT"], [])

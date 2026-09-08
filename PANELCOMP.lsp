@@ -52,8 +52,12 @@
 ;;; differences apart, loose enough to absorb rounding in the DWG.
 (setq *pc:tol* 0.001)
 
-;;; How far apart two outline endpoints can be and still count as the
-;;; same corner when piecing an outline together.
+;;; How far apart two pieces of an outline can sit and still be read as
+;;; belonging to the same panel. Raise it when one panel comes back as
+;;; several - a corner left open, or bridged by a sweep that stands off
+;;; from both edges, needs a gap wide enough to reach across. Keep it
+;;; well under the space between neighbouring panels, or two panels will
+;;; be read as one.
 (setq *pc:gap* 0.1)
 
 ;;; Layer holding the panel outlines. Leave as "" and PANELCOMP asks
@@ -494,7 +498,8 @@
     (/ *error* acadobj doc space lay ss split outs content
        cands panels recs wrappers idx r p
        sumw sumh cs cells cell k ix iy ix0 ix1 iy0 iy1
-       ent obj bb cx cy eps hit orphans dupes ext boxed ans tags taglay
+       ent obj bb cx cy eps hit orphans dupes empty ext boxed ans tags
+       taglay
        hmap emap curidx cursigs curents
        sigs raw pw ph gkey groups g grp col cidx ncol locked
        total ins-pt txtht mtext-obj content-str n)
@@ -647,7 +652,7 @@
           emap (pc:merge emap curidx curents)))
 
   ;;; --- fingerprint each panel and group the matches -------------
-  (setq groups '() dupes 0)
+  (setq groups '() dupes 0 empty 0)
   (foreach r recs
     (setq sigs (cdr (assoc (car r) hmap))
           raw  (length sigs)
@@ -663,6 +668,9 @@
           gkey (strcat (itoa raw) "|" (itoa (pc:snap pw))
                        "|" (itoa (pc:snap ph))))
     (if (/= raw (length sigs)) (setq dupes (1+ dupes)))
+    ;;; A panel with nothing in it is usually not a panel: it is a piece
+    ;;; of some outline that failed to join the rest of its own.
+    (if (= raw 0) (setq empty (1+ empty)))
     (setq grp nil)
     (foreach g groups
       (if (and (null grp) (= (car g) gkey) (equal (cadr g) sigs))
@@ -746,6 +754,15 @@
           (strcat content-str "\\P\\P"
                   "  NOTE: " (itoa orphans)
                   " object(s) fell outside every panel and were ignored.")))
+  (if (> empty 0)
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  NOTE: " (itoa empty)
+                  " panel(s) hold no perforations at all. If those should"
+                  " have holes, their outline was read as more than one"
+                  " panel - some piece of it sits further than "
+                  (rtos *pc:gap* 2 3) "\" from the rest. Raise *pc:gap*"
+                  " at the top of PANELCOMP.lsp and run it again.")))
   (if (> boxed 0)
     (setq content-str
           (strcat content-str "\\P\\P"
