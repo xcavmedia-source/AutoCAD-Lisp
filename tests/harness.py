@@ -141,6 +141,30 @@ def load_env(ents=None, mtext_out=None, answers=None):
             ents.append(e)
         return e
 
+    # a stand-in block table: name -> the entities gathered into it
+    blocks = {}
+
+    def do_command(a):
+        """Models -BLOCK (consumes the selection into a definition) and
+        -INSERT (drops an INSERT back at the given point)."""
+        verb = a[0]
+        if verb == "_.-BLOCK":
+            name, pt, sel = a[1], a[2], a[3]
+            blocks[name] = {'base': pt, 'ents': list(sel)}
+            for e in sel:                      # the geometry is consumed
+                if ents is not None and e in ents:
+                    ents.remove(e)
+        elif verb == "_.-INSERT":
+            name, pt = a[1], a[2]
+            e = Ent("INSERT", "?", bb(pt[0], pt[1], pt[0], pt[1]))
+            e.name, e.insertion = name, list(pt)
+            if ents is not None:
+                ents.append(e)
+        return None
+
+    sysvars = {'TILEMODE': 1, 'CVPORT': 2, 'TEXTSIZE': 2.5,
+               'CMDECHO': 1, 'OSMODE': 4133}
+
     # answers[n] feeds the nth getkword prompt; None means press Enter
     replies = list(answers or [])
     def getkword(a):
@@ -167,7 +191,12 @@ def load_env(ents=None, mtext_out=None, answers=None):
                     'linetype': 'Continuous', 'lineweight': -1}.get(a[1]))
     stub('vlax-put-property', lambda a: None)
     stub('vla-put-linetype', lambda a: setattr(a[0], 'linetype', a[1]))
-    stub('getvar',   lambda a: {'TILEMODE': 1, 'CVPORT': 2, 'TEXTSIZE': 2.5}[a[0]])
+    stub('getvar',   lambda a: sysvars[a[0]])
+    stub('setvar',   lambda a: sysvars.__setitem__(a[0], a[1]))
+    stub('command',  do_command)
+    stub('tblsearch', lambda a: True if a[1] in blocks else None)
+    stub('ssadd',    lambda a: (a[1].append(a[0]) or a[1]) if len(a) > 1 else [])
+    stub('vlax-vla-object->ename', lambda a: a[0])
     stub('getpoint', lambda a: [0.0, 0.0, 0.0])
     stub('vlax-3d-point', lambda a: a[0] if len(a) == 1 else list(a))
     stub('entget',   lambda a: entget(a[0]))
@@ -197,6 +226,7 @@ def load_env(ents=None, mtext_out=None, answers=None):
     stub('pc:bbox', lambda a: [list(a[0].bbox[0]), list(a[0].bbox[1])])
     stub('pc:prop', lambda a: a[0].props.get(a[1], 0.0))
     stub('pc:activespace', lambda a: None)
+    env.blocks, env.sysvars = blocks, sysvars
     return env
 
 def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None):
@@ -212,7 +242,8 @@ def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None):
     except Bail:
         bailed = True
     return {'text': mtext_out.get('text', ''), 'bailed': bailed,
-            'ents': ents, 'env': env}
+            'ents': ents, 'env': env, 'blocks': env.blocks,
+            'sysvars': env.sysvars}
 
 def call_fn(name, *args, **kw):
     """Call one helper straight out of the .lsp file."""

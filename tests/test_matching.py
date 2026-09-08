@@ -156,6 +156,51 @@ check("the fragment shows up as an empty panel",
       any('no perforations at all' in n for n in notes(r['text'])), True)
 check("and the real panels still grouped", types_in(r['text'])[0], ('10', 2, 5))
 
+print("\neach type is gathered into one movable block")
+# three panels: two of pattern A, one of pattern B
+B2 = A[:4]
+ents = sheet([A, B2, A])
+r = run(ents, answers=[None, "Yes"])          # no tags, yes blocks
+names = sorted(r['blocks'])
+check("one block per type", names, ["PANEL-TYPE-1", "PANEL-TYPE-2"])
+check("type 1 holds both of its panels and their holes",
+      len(r['blocks']["PANEL-TYPE-1"]['ents']), 2 + 5 + 5)
+check("type 2 holds its one panel",
+      len(r['blocks']["PANEL-TYPE-2"]['ents']), 1 + 4)
+check("one insert per type left in the drawing",
+      sorted(e.name for e in ents if e.type == "INSERT"), names)
+check("based on the type's lower-left corner, so it lands where it was",
+      r['blocks']["PANEL-TYPE-1"]['base'][:2], [0.0, 0.0])
+check("the second type is based on its own corner",
+      r['blocks']["PANEL-TYPE-2"]['base'][:2], [30.0, 0.0])
+check("the block names are reported", "PANEL-TYPE-1" in r['text'], True)
+
+print("\nblocking puts the drawing's settings back")
+ents = sheet([A, A])
+r = run(ents, answers=[None, "Yes"])
+check("object snaps restored", r['sysvars']['OSMODE'], 4133)
+check("command echo restored", r['sysvars']['CMDECHO'], 1)
+
+print("\ndeclining to block leaves the settings alone too")
+ents = sheet([A, A])
+r = run(ents)
+check("object snaps untouched", r['sysvars']['OSMODE'], 4133)
+check("no blocks made", r['blocks'], {})
+
+print("\ntags travel inside their group's block")
+ents = sheet([A, A])
+r = run(ents, answers=["Yes", "Yes"])
+check("the tags went into the block",
+      len([e for e in r['blocks']["PANEL-TYPE-1"]['ents']
+           if getattr(e, 'text', '').startswith("T")]), 2)
+check("and none are left loose in the drawing",
+      [e for e in ents if e.type == "TEXT"], [])
+
+print("\na second run does not redefine the first run's blocks")
+ents = sheet([A, A])
+env_blocks = run(ents, answers=[None, "Yes"])['blocks']
+check("first run", sorted(env_blocks), ["PANEL-TYPE-1"])
+
 print("\nPANELRESET clears the tags as well as the colours")
 run(ents, command='c:panelreset')
 check("tags erased", [e for e in ents if e.type == "TEXT"], [])

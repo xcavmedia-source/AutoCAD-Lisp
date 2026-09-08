@@ -23,6 +23,10 @@
 ;;; outline and everything inside it - and an MTEXT summary lists
 ;;; every type with its colour, size, hole count and quantity.
 ;;;
+;;; PANELCOMP will also, on request, tag each panel with its type number
+;;; and gather each type into a block of its own, so a whole type can be
+;;; dragged clear of the sheet as one object.
+;;;
 ;;; Panel outlines do NOT have to be closed polylines. Anything on the
 ;;; panel layer is grouped into outlines by shared endpoints, so a
 ;;; closed rectangle, an open polyline, a polyline with a gap in it,
@@ -438,6 +442,38 @@
            'vla-put-color (list (vlax-ename->vla-object ent) col))))
 )
 
+;;; A block name the drawing is not already using. An earlier run's
+;;; blocks are left alone rather than redefined under whoever has them.
+(defun pc:blockname (base / name n)
+  (setq name base n 1)
+  (while (tblsearch "BLOCK" name)
+    (setq n (1+ n) name (strcat base "-" (itoa n))))
+  name
+)
+
+;;; Gather ENTS into a block called NAME based at BASE, and drop one
+;;; insert of it back exactly where they were, so the drawing looks
+;;; unchanged but the whole type now moves as one object.
+;;; Returns the name on success, nil if there was nothing left to gather
+;;; or AutoCAD refused.
+(defun pc:mkblock (name base ents / ss pt)
+  (setq ss (ssadd)
+        pt (list (car base) (cadr base) 0.0))
+  ;;; An entity already consumed by an earlier block, or erased, gives
+  ;;; nil from ENTGET and must not go into the selection.
+  (foreach e ents (if (entget e) (ssadd e ss)))
+  (if (> (sslength ss) 0)
+    (if (vl-catch-all-error-p
+          (vl-catch-all-apply
+            '(lambda (nm p sel)
+               (command "_.-BLOCK" nm p sel "")
+               (command "_.-INSERT" nm p 1 1 0))
+            (list name pt ss)))
+      nil
+      name)
+  )
+)
+
 ;;; Safely get the active space VLA object (model or paper).
 (defun pc:activespace (doc)
   (if (and (= (getvar "TILEMODE") 0)
@@ -503,11 +539,16 @@
        taglay
        hmap emap curidx cursigs curents
        sigs raw pw ph gkey groups g grp col cidx ncol locked nin q
+       gents tagobj bx by bans bname bnames blocked oldecho oldsnap
        total ins-pt txtht mtext-obj content-str n)
 
   ;;; Local error handler - closes the undo group on cancel or error
   ;;; so the drawing is never left mid-transaction.
   (defun *error* (msg)
+    ;;; Put back anything the run switched off before it stopped, or a
+    ;;; cancel leaves the drawing with no object snaps.
+    (if oldecho (setvar "CMDECHO" oldecho))
+    (if oldsnap (setvar "OSMODE" oldsnap))
     (if doc (vla-endundomark doc))
     (if (not (member msg '("Function cancelled" "quit / exit abort"
                            "console break")))
@@ -707,6 +748,20 @@
   (setq tags 0)
   (if (= ans "Yes") (setq taglay (pc:layer doc *pc:tag-layer*)))
 
+  (initget "Yes No")
+  (setq bans (getkword
+               "\nPut each type into its own block, so it moves as one? [Yes/No] <No>: "))
+  (if (null bans) (setq bans "No"))
+  (setq blocked 0 bnames '())
+  ;;; -BLOCK and -INSERT take their points from this code, not the
+  ;;; cursor, so running snaps would only drag them off the corner.
+  (if (= bans "Yes")
+    (progn
+      (setq oldecho (getvar "CMDECHO")
+            oldsnap (getvar "OSMODE"))
+      (setvar "CMDECHO" 0)
+      (setvar "OSMODE" 0)))
+
   (foreach g groups
     (setq col (nth (rem cidx ncol) *pc:colors*)
           pw  (car   (cadddr g))
@@ -716,18 +771,36 @@
           total (+ total n))
     ;;; Colour the outline and everything inside it, as an object
     ;;; override so the layer's own colour is left alone.
+    (setq gents '() bx nil by nil)
     (foreach r (caddr g)
       (foreach ent (cadr r)
-        (if (not (pc:setcolor ent col)) (setq locked (1+ locked))))
+        (if (not (pc:setcolor ent col)) (setq locked (1+ locked)))
+        (setq gents (cons ent gents)))
       (foreach ent (cdr (assoc (car r) emap))
-        (if (not (pc:setcolor ent col)) (setq locked (1+ locked))))
+        (if (not (pc:setcolor ent col)) (setq locked (1+ locked)))
+        (setq gents (cons ent gents)))
       (if (= ans "Yes")
-        (if (not (vl-catch-all-error-p
-                   (vl-catch-all-apply
-                     'pc:tag (list space (list (caddr r) (cadddr r))
-                                   (strcat "T" (itoa (1+ cidx)))
-                                   col taglay))))
-          (setq tags (1+ tags)))))
+        (progn
+          (setq tagobj (vl-catch-all-apply
+                         'pc:tag (list space (list (caddr r) (cadddr r))
+                                       (strcat "T" (itoa (1+ cidx)))
+                                       col taglay)))
+          (if (not (vl-catch-all-error-p tagobj))
+            (setq tags  (1+ tags)
+                  gents (cons (vlax-vla-object->ename tagobj) gents)))))
+      ;;; The block is based on the lower-left corner of the whole type,
+      ;;; so the insert lands exactly over the geometry it replaces.
+      (if (or (null bx) (< (car  (caddr r)) bx)) (setq bx (car  (caddr r))))
+      (if (or (null by) (< (cadr (caddr r)) by)) (setq by (cadr (caddr r)))))
+
+    (setq bname nil)
+    (if (= bans "Yes")
+      (if (setq bname (pc:mkblock (pc:blockname
+                                    (strcat "PANEL-TYPE-" (itoa (1+ cidx))))
+                                  (list bx by) gents))
+        (setq blocked (1+ blocked)
+              bnames  (cons bname bnames))))
+
     (setq content-str
           (strcat content-str
                   "{\\H1.0x;\\L;TYPE " (itoa (1+ cidx))
@@ -735,8 +808,12 @@
                   "  Qty    =  " (itoa n) "\\P"
                   "  Size   =  " (pc:fmtinch pw) " x " (pc:fmtinch ph) "\\P"
                   "  Holes  =  " (itoa raw) "\\P"
+                  (if bname (strcat "  Block  =  " bname "\\P") "")
                   "\\P")
           cidx (1+ cidx)))
+
+  (if (= bans "Yes")
+    (progn (setvar "CMDECHO" oldecho) (setvar "OSMODE" oldsnap)))
 
   ;;; --- totals and anything worth flagging -----------------------
   (setq content-str
@@ -784,6 +861,17 @@
           (strcat content-str "\\P\\P"
                   "  " (itoa tags) " panel(s) tagged on layer "
                   *pc:tag-layer* ".")))
+  (if (> blocked 0)
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  " (itoa blocked) " type(s) gathered into blocks."
+                  " Each one moves as a single object; explode it to get"
+                  " the panels back.")))
+  (if (and (= bans "Yes") (< blocked (length groups)))
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  NOTE: " (itoa (- (length groups) blocked))
+                  " type(s) could not be blocked - locked layer?")))
   (if (and (= ans "Yes") (< tags total))
     (setq content-str
           (strcat content-str "\\P\\P"
