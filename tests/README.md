@@ -33,8 +33,11 @@ summary it wrote and the colours it applied.
 - **test_matching.py** - what counts as the same part and what must not:
   translation across the origin, mirrors, 180-degree rotations, drift
   above and below tolerance, panel size, logo shapes, stacked duplicate
-  geometry, colour-list wrap-around, locked layers, and the `PANELCLOSE`
-  and `PANELRESET` commands.
+  geometry, colour-list wrap-around, locked layers, panel tagging, and
+  the `PANELCLOSE` and `PANELRESET` commands. It also covers the two
+  ways a panel measures wrong if you go by bounding box - edge lines
+  left overshooting their corner, and a bulged corner clip that sweeps
+  outside it - both of which must still come out 24 x 96.
 - **test_signatures.py** - the rounding helpers, every branch of
   `pc:sig`, shapes that share a bounding box, and a static sweep
   confirming every function the file calls is one that exists. That last

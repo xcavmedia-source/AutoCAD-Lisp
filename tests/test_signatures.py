@@ -83,7 +83,10 @@ KNOWN = set(SPECIAL) | {str(k) for k in BUILTIN} | {
     'vla-getboundingbox', 'vla-get-startpoint', 'vla-get-endpoint',
     'vla-put-color', 'vla-put-closed', 'vla-addmtext', 'vla-put-height',
     'ssget', 'sslength', 'ssname', 'entget', 'entsel', 'getvar', 'getpoint',
-    'initget', 'exit', 'apply', 'princ'}
+    'initget', 'exit', 'apply', 'princ', 'getkword', 'entdel',
+    'vlax-make-safearray', 'vlax-safearray-fill', 'vlax-make-variant',
+    'vlax-put-property', 'vla-addlightweightpolyline', 'vla-addtext',
+    'vla-get-layers', 'vla-item', 'vla-add', 'vla-put-layer'}
 check("no unknown function names",
       sorted(c for c in called if c not in KNOWN and c not in defined), [])
 print("    %d functions defined, %d distinct called" % (len(defined), len(called)))

@@ -27,7 +27,7 @@ print(r['text'].replace('\\P', '\n'))
 
 print("\nresults")
 check("three types, most common first", types_in(r['text']),
-      [('1', 3, 5), ('3', 2, 4), ('5', 1, 5)])
+      [('10', 3, 5), ('130', 2, 4), ('70', 1, 5)])
 check("the border is skipped as a wrapper",
       any('enclose other panels' in n for n in notes(r['text'])), True)
 
@@ -37,7 +37,7 @@ for e in ents:
         colours.setdefault(panel_of[e.id], set()).add(e.color)
 check("panels 0, 2 and 4 share a colour",
       colours[0] == colours[2] == colours[4], True)
-check("the line-built panel joined them", colours[4], {1})
+check("the line-built panel joined them", colours[4], {10})
 check("the two open-polyline panels share a colour", colours[1], colours[3])
 check("every hole took a colour",
       all(e.color for e in ents if e.type == "CIRCLE"), True)

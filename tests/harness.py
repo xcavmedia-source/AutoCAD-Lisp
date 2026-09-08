@@ -42,12 +42,17 @@ def entget(e):
 def circle(cx, cy, r, layer=HOLE_LAYER):
     return Ent("CIRCLE", layer, bb(cx-r, cy-r, cx+r, cy+r), props={'radius': r})
 
-def poly(pts, layer=HOLE_LAYER, closed=True, area=0.0):
+def poly(pts, layer=HOLE_LAYER, closed=True, area=0.0, bulges=None):
+    """`bulges[i]` arcs the segment leaving vertex i, as DXF group 42."""
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
+    dxf = []
+    for i, (a, b) in enumerate(pts):
+        dxf.append(dot(10, [float(a), float(b)]))
+        if bulges and bulges[i]:
+            dxf.append(dot(42, float(bulges[i])))
     return Ent("LWPOLYLINE", layer, bb(min(xs), min(ys), max(xs), max(ys)),
-               dxf=[dot(10, [float(a), float(b)]) for a, b in pts],
-               closed=closed, props={'area': area})
+               dxf=dxf, closed=closed, props={'area': area})
 
 def rect_poly(x0, y0, x1, y1, layer=PANEL_LAYER, closed=True, gap=0.0):
     """A rectangle as one polyline. `gap` leaves the loop open."""
@@ -63,11 +68,12 @@ def rect_lines(x0, y0, x1, y1, layer=PANEL_LAYER):
     c, out = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], []
     for i in range(4):
         a, b = c[i], c[(i + 1) % 4]
+        p1 = [float(a[0]), float(a[1]), 0.0]
+        p2 = [float(b[0]), float(b[1]), 0.0]
         out.append(Ent("LINE", layer,
                        bb(min(a[0], b[0]), min(a[1], b[1]),
                           max(a[0], b[0]), max(a[1], b[1])),
-                       p1=[float(a[0]), float(a[1]), 0.0],
-                       p2=[float(b[0]), float(b[1]), 0.0]))
+                       dxf=[dot(10, p1), dot(11, p2)], p1=p1, p2=p2))
     return out
 
 def sheet(patterns, w=24.0, h=96.0, pitch=30.0, x0=0.0, y0=0.0, kind=None):
@@ -96,7 +102,7 @@ def sheet(patterns, w=24.0, h=96.0, pitch=30.0, x0=0.0, y0=0.0, kind=None):
 class Bail(Exception):
     """Raised in place of AutoLISP's (exit)."""
 
-def load_env(ents=None, mtext_out=None):
+def load_env(ents=None, mtext_out=None, answers=None):
     """A fresh environment with PANELCOMP.lsp loaded and every
     drawing-facing function stubbed."""
     env = make_env()
@@ -105,7 +111,7 @@ def load_env(ents=None, mtext_out=None):
     def stub(name, fn): G[Sym(name)] = fn
 
     for n in ('vl-load-com', 'vla-startundomark', 'vla-endundomark',
-              'initget', 'vla-put-height', 'vlax-3d-point',
+              'initget', 'vla-put-height',
               'vlax-get-acad-object', 'vla-get-activedocument',
               'vla-get-modelspace', 'vla-get-paperspace'):
         stub(n, lambda a: None)
@@ -115,9 +121,54 @@ def load_env(ents=None, mtext_out=None):
             raise RuntimeError("object is on a locked layer")
         a[0].color = a[1]
 
+    def add_lwpoly(a):
+        pts = a[1]
+        e = poly([(pts[i], pts[i+1]) for i in range(0, len(pts), 2)],
+                 layer="?", closed=True)
+        if ents is not None:
+            ents.append(e)
+        return e
+
+    def entdel(a):
+        a[0].deleted = True
+        if ents is not None and a[0] in ents:
+            ents.remove(a[0])
+
+    def add_text(a):
+        e = Ent("TEXT", "?", bb(0, 0, 1, 1))
+        e.text, e.height = a[1], a[3]
+        if ents is not None:
+            ents.append(e)
+        return e
+
+    # answers[n] feeds the nth getkword prompt; None means press Enter
+    replies = list(answers or [])
+    def getkword(a):
+        return replies.pop(0) if replies else None
+
     stub('exit',     lambda a: (_ for _ in ()).throw(Bail()))
+    stub('getkword', getkword)
+    stub('entdel',   entdel)
+    G[Sym('vlax-vbdouble')] = 5
+    def fill(a):
+        a[0][:] = a[1]      # fills in place, as the real one does
+        return a[0]
+    stub('vlax-make-safearray', lambda a: [])
+    stub('vlax-safearray-fill', fill)
+    stub('vlax-make-variant',   lambda a: a[0])
+    stub('vla-addlightweightpolyline', add_lwpoly)
+    stub('vla-addtext', add_text)
+    stub('vla-get-layers', lambda a: None)
+    stub('vla-item', lambda a: a[1])
+    stub('vla-add',  lambda a: a[1])
+    stub('vla-put-layer', lambda a: setattr(a[0], 'layer', a[1]))
+    stub('vlax-get-property',
+         lambda a: {'layer': a[0].layer, 'color': a[0].color,
+                    'linetype': 'Continuous', 'lineweight': -1}.get(a[1]))
+    stub('vlax-put-property', lambda a: None)
     stub('getvar',   lambda a: {'TILEMODE': 1, 'CVPORT': 2, 'TEXTSIZE': 2.5}[a[0]])
     stub('getpoint', lambda a: [0.0, 0.0, 0.0])
+    stub('vlax-3d-point', lambda a: a[0] if len(a) == 1 else list(a))
     stub('entget',   lambda a: entget(a[0]))
     stub('entsel',   lambda a: None)
     stub('vlax-ename->vla-object', lambda a: a[0])
@@ -127,7 +178,9 @@ def load_env(ents=None, mtext_out=None):
     stub('vlax-safearray->list',   lambda a: a[0])
     stub('vla-put-color',  put_color)
     stub('vla-put-closed', lambda a: setattr(a[0], 'closed', True))
-    stub('ssget',    lambda a: ents if ents else None)
+    # a real selection set is a snapshot: deleting an entity does not
+    # shrink it, so hand out a copy
+    stub('ssget',    lambda a: list(ents) if ents else None)
     stub('sslength', lambda a: len(a[0]))
     stub('ssname',   lambda a: a[0][a[1]])
     if mtext_out is not None:
@@ -145,10 +198,11 @@ def load_env(ents=None, mtext_out=None):
     stub('pc:activespace', lambda a: None)
     return env
 
-def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp'):
-    """Run one command over `ents` and return what it produced."""
+def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None):
+    """Run one command over `ents` and return what it produced.
+    `answers` feeds the getkword prompts in order; None presses Enter."""
     mtext_out = {}
-    env = load_env(ents, mtext_out)
+    env = load_env(ents, mtext_out, answers)
     if panel_layer is not None:
         env.vars[Sym('*pc:panel-layer*')] = panel_layer
     try:

@@ -28,9 +28,16 @@
 ;;; closed rectangle, an open polyline, a polyline with a gap in it,
 ;;; or four separate LINEs all resolve to a single panel.
 ;;;
+;;; A panel is measured across the straight axis-aligned edges of its
+;;; outline, never its bounding box. Corner treatment - a radius, a
+;;; clip, a decorative sweep - and edge lines left overshooting their
+;;; neighbour both push a bounding box outward, which would report the
+;;; panel too big and, worse, move the corner that every hole position
+;;; is measured from. POLYINFO measures the same way.
+;;;
 ;;; Commands : PANELCOMP    compare, colour and report
 ;;;            PANELRESET   put a selection back to colour ByLayer
-;;;            PANELCLOSE   close open polyline panel outlines
+;;;            PANELCLOSE   rebuild outlines as closed rectangles
 ;;;
 ;;; Requirements : AutoCAD 2000+ with Visual LISP / ActiveX support
 ;;; ============================================================
@@ -62,9 +69,21 @@
     "TOLERANCE" "VIEWPORT" "WIPEOUT"))
 
 ;;; ACI colours handed out to panel types, most common type first.
+;;; Only the 24 pure hues are used, ordered so each one bisects the gap
+;;; left by those before it: the fewer types a job has, the further
+;;; apart on the colour wheel their colours land.
+;;;
+;;; ACI 1-6 are deliberately absent. They are exact duplicates of 10,
+;;; 50, 90, 130, 170 and 210 - ACI 1 and ACI 10 are both pure red - so a
+;;; list holding both sets gives two different types the same colour.
 (setq *pc:colors*
-  '(1 3 5 4 6 2 30 130 90 190 210 230 40 150 170 20 60 100 140 180
-    220 10 50 70 110 160 200 240 14 34 74 114 154 194 234))
+  '( 10 130  70 190  40 160 100 220
+     20 140  80 200  50 170 110 230
+     30 150  90 210  60 180 120 240))
+
+;;; Layer the type tags are written to, so they can be frozen, isolated
+;;; or deleted without touching the panels.
+(setq *pc:tag-layer* "PANEL-TYPE")
 
 
 ;;; ---- internal helpers ------------------------------------------
@@ -152,47 +171,48 @@
   )
 )
 
-;;; The two loose ends of an open ENT, as 2D points, or nil when the
-;;; entity type has no endpoints to chain from.
-(defun pc:ends (ent obj / ed typ pts p1 p2)
-  (setq ed  (entget ent)
-        typ (cdr (assoc 0 ed)))
-  (cond
-    ((member typ '("LINE" "ARC"))
-     (setq p1 (vlax-safearray->list
-                (vlax-variant-value (vla-get-startpoint obj)))
-           p2 (vlax-safearray->list
-                (vlax-variant-value (vla-get-endpoint obj))))
-     (list (list (car p1) (cadr p1)) (list (car p2) (cadr p2))))
-    ((= typ "LWPOLYLINE")
-     (setq pts '())
-     (foreach pair ed
-       (if (= (car pair) 10) (setq pts (cons (cdr pair) pts))))
-     (if pts
-       (list (list (car (last pts)) (cadr (last pts)))
-             (list (car (car pts))  (cadr (car pts))))))
-    (t nil)
-  )
+;;; True when boxes A and B come within TOL of each other.
+(defun pc:boxnear (a b tol)
+  (and (<= (- (car  (car a)) tol) (car  (cadr b)))
+       (<= (- (car  (car b)) tol) (car  (cadr a)))
+       (<= (- (cadr (car a)) tol) (cadr (cadr b)))
+       (<= (- (cadr (car b)) tol) (cadr (cadr a))))
 )
 
-;;; True when points A and B are the same corner within TOL.
-(defun pc:near (a b tol)
-  (and (< (abs (- (car  a) (car  b))) tol)
-       (< (abs (- (cadr a) (cadr b))) tol))
+;;; The places an outline piece can join its neighbours: one box per
+;;; straight segment, or the whole entity's box when it has none.
+;;; Matching shared endpoints is not enough - corner lines are often
+;;; left overshooting each other rather than trimmed, so the pieces of
+;;; one panel cross without ever meeting end to end. Comparing segments
+;;; catches those, and it still keeps neighbouring panels apart, since
+;;; their edges stay a panel gap away from one another.
+(defun pc:parts (ent bb / segs out p1 p2)
+  (setq segs (pc:segs (list ent)) out '())
+  (if segs
+    (foreach s segs
+      (setq p1  (car s)
+            p2  (cadr s)
+            out (cons (list (list (min (car  p1) (car  p2))
+                                  (min (cadr p1) (cadr p2)))
+                            (list (max (car  p1) (car  p2))
+                                  (max (cadr p1) (cadr p2))))
+                      out)))
+    ;;; An arc or spline sets no size, but a corner sweep still has to
+    ;;; join the outline it belongs to.
+    (setq out (list bb)))
+  out
 )
 
-;;; True when outline piece IT shares a corner with any piece in
-;;; group G. IT and each member are (ents bb p1 p2).
+;;; True when outline piece IT comes within TOL of any piece in group G.
+;;; Both are (ents bb parts).
 (defun pc:touches (it g tol / hit)
   (setq hit nil)
   (foreach o g
-    (if (and (null hit)
-             (or (pc:near (caddr  it) (caddr  o) tol)
-                 (pc:near (caddr  it) (cadddr o) tol)
-                 (pc:near (cadddr it) (caddr  o) tol)
-                 (pc:near (cadddr it) (cadddr o) tol)))
-      (setq hit t))
-  )
+    (if (not hit)
+      (foreach pa (caddr it)
+        (if (not hit)
+          (foreach pb (caddr o)
+            (if (pc:boxnear pa pb tol) (setq hit t)))))))
   hit
 )
 
@@ -225,6 +245,96 @@
     (subst (cons idx (append vals (cdr rec))) rec map)
     (cons (cons idx vals) map)
   )
+)
+
+;;; Every straight segment in an outline group, as (p1 p2) pairs.
+;;; Arcs, splines and bulged polyline segments are deliberately left
+;;; out: a radius, a clip or a decorative sweep at a corner is corner
+;;; treatment, not panel edge, and only edges may set the size.
+(defun pc:segs (ents / segs ent ed typ verts n i)
+  (setq segs '())
+  (foreach ent ents
+    (setq ed  (entget ent)
+          typ (cdr (assoc 0 ed)))
+    (cond
+      ((= typ "LINE")
+       (setq segs (cons (list (cdr (assoc 10 ed)) (cdr (assoc 11 ed))) segs)))
+      ((= typ "LWPOLYLINE")
+       ;;; Walk the DXF in order, pairing each vertex with the bulge
+       ;;; that follows it - a bulge is the arc in an arced segment,
+       ;;; and is absent from the list when it is zero.
+       (setq verts '())
+       (foreach pair ed
+         (cond
+           ((= (car pair) 10)
+            (setq verts (cons (list (cdr pair) 0.0) verts)))
+           ((and (= (car pair) 42) verts)
+            (setq verts (cons (list (car (car verts)) (cdr pair))
+                              (cdr verts))))))
+       (setq verts (reverse verts)
+             n     (length verts)
+             i     0)
+       (while (< i (1- n))
+         (if (< (abs (cadr (nth i verts))) 1e-8)
+           (setq segs (cons (list (car (nth i verts))
+                                  (car (nth (1+ i) verts)))
+                            segs)))
+         (setq i (1+ i)))
+       (if (and (pc:closedp ent) (> n 1)
+                (< (abs (cadr (nth (1- n) verts))) 1e-8))
+         (setq segs (cons (list (car (nth (1- n) verts))
+                                (car (car verts)))
+                          segs))))
+      ;;; Arcs, splines and heavy polylines contribute no straight edge.
+    )
+  )
+  segs
+)
+
+;;; The panel rectangle, read off the outline's straight axis-aligned
+;;; edges rather than its bounding box. A corner treatment that sweeps
+;;; past the corner, or an edge line left overshooting its neighbour,
+;;; inflates a bounding box and the panel then measures too big - and
+;;; because hole positions are taken from the panel corner, every one of
+;;; them shifts with it. Reading the edges instead ignores both.
+;;; POLYINFO measures the same way, from orthogonal segments only.
+;;; Returns nil when either axis lacks a pair of edges to measure
+;;; between, leaving the caller to fall back to the bounding box.
+(defun pc:extents (ents / eps xs ys p1 p2 dx dy x0 x1 y0 y1)
+  (setq eps (* *pc:tol* 10.0) xs '() ys '())
+  (foreach s (pc:segs ents)
+    (setq p1 (car s)
+          p2 (cadr s)
+          dx (abs (- (car  p2) (car  p1)))
+          dy (abs (- (cadr p2) (cadr p1))))
+    (cond
+      ((and (< dx eps) (> dy eps)) (setq xs (cons (car  p1) xs)))
+      ((and (< dy eps) (> dx eps)) (setq ys (cons (cadr p1) ys)))
+    )
+  )
+  (if xs (setq x0 (apply 'min xs) x1 (apply 'max xs)))
+  (if ys (setq y0 (apply 'min ys) y1 (apply 'max ys)))
+  (if (and x0 y0 (> (- x1 x0) eps) (> (- y1 y0) eps))
+    (list (list x0 y0) (list x1 y1))
+  )
+)
+
+;;; Draw a closed rectangle on EXT's corners, carrying over the layer,
+;;; colour, linetype and lineweight of SRC.
+(defun pc:mkrect (space ext src / arr obj)
+  (setq arr (vlax-make-safearray vlax-vbDouble '(0 . 7)))
+  (vlax-safearray-fill arr
+    (list (car  (car  ext)) (cadr (car  ext))
+          (car  (cadr ext)) (cadr (car  ext))
+          (car  (cadr ext)) (cadr (cadr ext))
+          (car  (car  ext)) (cadr (cadr ext))))
+  (setq obj (vla-addlightweightpolyline space (vlax-make-variant arr)))
+  (vla-put-closed obj :vlax-true)
+  (foreach prp '(Layer Color Linetype Lineweight)
+    (vl-catch-all-apply
+      'vlax-put-property
+      (list obj prp (vlax-get-property src prp))))
+  obj
 )
 
 ;;; Describe one piece of geometry inside a panel as a string: its
@@ -275,14 +385,43 @@
   (reverse out)
 )
 
-;;; Name the handful of ACI colours people read by name.
+;;; Name the twelve hues that have names worth printing. The rest are
+;;; reported by number, which is what QSELECT and the layer tools want.
 (defun pc:colorname (c / hit)
-  (if (setq hit (assoc c '((1 . "red")   (2 . "yellow") (3 . "green")
-                           (4 . "cyan")  (5 . "blue")   (6 . "magenta")
-                           (7 . "white"))))
+  (if (setq hit (assoc c '(( 10 . "red")          ( 30 . "orange")
+                           ( 50 . "yellow")       ( 70 . "chartreuse")
+                           ( 90 . "green")        (110 . "spring green")
+                           (130 . "cyan")         (150 . "azure")
+                           (170 . "blue")         (190 . "violet")
+                           (210 . "magenta")      (230 . "rose"))))
     (strcat (itoa c) " (" (cdr hit) ")")
     (itoa c)
   )
+)
+
+;;; Make sure layer NAME exists, and return it, or nil if it cannot be
+;;; created.
+(defun pc:layer (doc name / lay)
+  (setq lay (vl-catch-all-apply 'vla-item
+                                (list (vla-get-layers doc) name)))
+  (if (vl-catch-all-error-p lay)
+    (setq lay (vl-catch-all-apply 'vla-add
+                                  (list (vla-get-layers doc) name))))
+  (if (vl-catch-all-error-p lay) nil name)
+)
+
+;;; Write a type tag at the top left of the panel at EXT, sized to the
+;;; panel so it stays readable whatever the sheet scale.
+(defun pc:tag (space ext txt col lay / h obj)
+  (setq h   (max (/ (- (car (cadr ext)) (car (car ext))) 6.0) 0.0625)
+        obj (vla-addtext space txt
+              (vlax-3d-point (list (+ (car  (car  ext)) (* h 0.25))
+                                   (- (cadr (cadr ext)) (* h 1.30))
+                                   0.0))
+              h))
+  (vl-catch-all-apply 'vla-put-color (list obj col))
+  (if lay (vl-catch-all-apply 'vla-put-layer (list obj lay)))
+  obj
 )
 
 ;;; Colour ENT, returning nil instead of failing. An object on a
@@ -322,7 +461,7 @@
 ;;; (list-of-enames bbox) and content is a flat list of enames.
 ;;; Everything on the panel layer becomes an outline; closed shapes
 ;;; stand alone, open pieces are chained into loops by their corners.
-(defun pc:outlines (ss lay / i ent obj bb ends content opens g it ents ub outs)
+(defun pc:outlines (ss lay / i ent obj bb content opens g it ents ub outs)
   (setq content '() opens '() outs '() i 0)
   (while (< i (sslength ss))
     (setq ent (ssname ss i)
@@ -334,11 +473,7 @@
       ((null (setq bb (pc:bbox obj))) nil)
       ((pc:closedp ent)
        (setq outs (cons (list (list ent) bb) outs)))
-      ((setq ends (pc:ends ent obj))
-       (setq opens (cons (list (list ent) bb (car ends) (cadr ends))
-                         opens)))
-      ;;; No endpoints to chain from - take it as an outline as it is.
-      (t (setq outs (cons (list (list ent) bb) outs))))
+      (t (setq opens (cons (list (list ent) bb (pc:parts ent bb)) opens))))
     (setq i (1+ i)))
 
   ;;; Fold the open pieces into loops and take each loop's extents.
@@ -359,7 +494,7 @@
     (/ *error* acadobj doc space lay ss split outs content
        cands panels recs wrappers idx r p
        sumw sumh cs cells cell k ix iy ix0 ix1 iy0 iy1
-       ent obj bb cx cy eps hit orphans dupes
+       ent obj bb cx cy eps hit orphans dupes ext boxed ans tags taglay
        hmap emap curidx cursigs curents
        sigs raw pw ph gkey groups g grp col cidx ncol locked
        total ins-pt txtht mtext-obj content-str n)
@@ -419,10 +554,17 @@
     (progn (princ "\nEvery outline found contains another - nothing to compare.")
            (exit)))
 
-  ;;; --- number the panels: (idx enames bbmin bbmax) ---------------
-  (setq recs '() idx 0)
+  ;;; --- number the panels: (idx enames min max) ------------------
+  ;;; The panel rectangle comes from the outline's straight edges, not
+  ;;; its bounding box, so corner treatment and overshooting lines do
+  ;;; not inflate the size. Everything downstream - the reported size,
+  ;;; and the corner every hole position is measured from - rests on it.
+  (setq recs '() idx 0 boxed 0)
   (foreach p panels
-    (setq recs (cons (list idx (car p) (car (cadr p)) (cadr (cadr p))) recs)
+    (if (setq ext (pc:extents (car p)))
+      nil
+      (setq ext (cadr p) boxed (1+ boxed)))
+    (setq recs (cons (list idx (car p) (car ext) (cadr ext)) recs)
           idx  (1+ idx)))
   (setq recs (reverse recs))
 
@@ -539,6 +681,18 @@
         locked 0
         content-str (strcat "{\\H1.25x;\\L;Panel Comparison\\l}\\P" "\\P"))
 
+  ;;; Colour alone stops separating types once there are more types
+  ;;; than colours, so the tag is offered as the default at that point.
+  (initget "Yes No")
+  (setq ans (getkword
+              (strcat "\n" (itoa (length groups)) " panel type(s) found."
+                      " Tag each panel with its type number? [Yes/No] <"
+                      (if (> (length groups) ncol) "Yes" "No") ">: ")))
+  (if (null ans)
+    (setq ans (if (> (length groups) ncol) "Yes" "No")))
+  (setq tags 0)
+  (if (= ans "Yes") (setq taglay (pc:layer doc *pc:tag-layer*)))
+
   (foreach g groups
     (setq col (nth (rem cidx ncol) *pc:colors*)
           pw  (car   (cadddr g))
@@ -552,7 +706,14 @@
       (foreach ent (cadr r)
         (if (not (pc:setcolor ent col)) (setq locked (1+ locked))))
       (foreach ent (cdr (assoc (car r) emap))
-        (if (not (pc:setcolor ent col)) (setq locked (1+ locked)))))
+        (if (not (pc:setcolor ent col)) (setq locked (1+ locked))))
+      (if (= ans "Yes")
+        (if (not (vl-catch-all-error-p
+                   (vl-catch-all-apply
+                     'pc:tag (list space (list (caddr r) (cadddr r))
+                                   (strcat "T" (itoa (1+ cidx)))
+                                   col taglay))))
+          (setq tags (1+ tags)))))
     (setq content-str
           (strcat content-str
                   "{\\H1.0x;\\L;TYPE " (itoa (1+ cidx))
@@ -585,6 +746,18 @@
           (strcat content-str "\\P\\P"
                   "  NOTE: " (itoa orphans)
                   " object(s) fell outside every panel and were ignored.")))
+  (if (> boxed 0)
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  NOTE: " (itoa boxed)
+                  " panel(s) had no clear pair of straight edges on one"
+                  " axis and were measured by bounding box instead."
+                  " Check their size below.")))
+  (if (> tags 0)
+    (setq content-str
+          (strcat content-str "\\P\\P"
+                  "  " (itoa tags) " panel(s) tagged on layer "
+                  *pc:tag-layer* ".")))
   (if (> locked 0)
     (setq content-str
           (strcat content-str "\\P\\P"
@@ -615,7 +788,7 @@
 
 ;;; ---- put colours back ------------------------------------------
 
-(defun c:PANELRESET (/ *error* acadobj doc ss i n locked)
+(defun c:PANELRESET (/ *error* acadobj doc ss i n locked erased ent)
 
   (defun *error* (msg)
     (if doc (vla-endundomark doc))
@@ -635,15 +808,24 @@
   (if (null ss)
     (progn (princ "\nNothing selected - command cancelled.") (exit)))
 
-  (setq i 0 n 0 locked 0)
+  (setq i 0 n 0 locked 0 erased 0)
   (while (< i (sslength ss))
-    (if (pc:setcolor (ssname ss i) 256)
-      (setq n (1+ n))
-      (setq locked (1+ locked)))
+    (setq ent (ssname ss i))
+    ;;; A type tag is PANELCOMP's own annotation, not drawing content,
+    ;;; so resetting takes it away rather than colouring it ByLayer.
+    (if (= (cdr (assoc 8 (entget ent))) *pc:tag-layer*)
+      (if (not (vl-catch-all-error-p
+                 (vl-catch-all-apply 'entdel (list ent))))
+        (setq erased (1+ erased)))
+      (if (pc:setcolor ent 256)
+        (setq n (1+ n))
+        (setq locked (1+ locked))))
     (setq i (1+ i)))
 
   (vla-endundomark doc)
   (princ (strcat "\n" (itoa n) " object(s) set back to ByLayer."))
+  (if (> erased 0)
+    (princ (strcat "  " (itoa erased) " type tag(s) erased.")))
   (if (> locked 0)
     (princ (strcat "  " (itoa locked)
                    " refused the change - locked layer?")))
@@ -651,14 +833,20 @@
 )
 
 
-;;; ---- close open panel outlines ---------------------------------
-;;; PANELCOMP does not need closed outlines, but closed ones give you
-;;; working AREA, hatching and boundary picks. This closes the single
-;;; open polylines; outlines built from several pieces are reported
-;;; instead, since joining those is PEDIT's job.
+;;; ---- rebuild panel outlines as closed rectangles ---------------
+;;; Setting a polyline's Closed flag only joins its last vertex to its
+;;; first, which cuts the corner whenever those vertices are not the
+;;; corners - the outline then encloses the wrong panel. This draws a
+;;; fresh closed rectangle on the panel's real corners instead, taken
+;;; from the straight edges of the outline so that corner treatment and
+;;; overshooting lines cannot shift them.
+;;;
+;;; The original geometry is kept unless you answer Yes to replacing it.
+;;; Keeping it is the safe answer when the corners carry detail worth
+;;; holding on to; the new rectangle is drawn either way.
 
-(defun c:PANELCLOSE (/ *error* acadobj doc lay ss split outs
-                       p ents ent obj closed gap pieces skipped)
+(defun c:PANELCLOSE (/ *error* acadobj doc space lay ss split outs
+                       p ents ext src ans built skipped)
 
   (defun *error* (msg)
     (if doc (vla-endundomark doc))
@@ -670,53 +858,54 @@
   )
 
   (setq acadobj (vlax-get-acad-object)
-        doc     (vla-get-activedocument acadobj))
+        doc     (vla-get-activedocument acadobj)
+        space   (pc:activespace doc))
   (vla-startundomark doc)
 
   (setq lay (pc:asklayer))
-  (princ "\nSelect the panel outlines to close: ")
+  (princ "\nSelect the panel outlines to rebuild: ")
   (setq ss (ssget))
   (if (null ss)
     (progn (princ "\nNothing selected - command cancelled.") (exit)))
 
-  (setq split   (pc:outlines ss lay)
-        outs    (car split)
-        closed 0 gap 0 pieces 0 skipped 0)
+  (initget "Yes No")
+  (setq ans (getkword
+              "\nDelete the old outline geometry once rebuilt? [Yes/No] <No>: "))
+  (if (null ans) (setq ans "No"))
+
+  (setq split (pc:outlines ss lay)
+        outs  (car split)
+        built 0
+        skipped 0)
 
   (foreach p outs
-    (setq ents (car p))
-    (if (= (length ents) 1)
+    (setq ents (car p)
+          ext  (pc:extents ents))
+    ;;; No pair of straight edges on one axis means there is nothing
+    ;;; solid to put a corner on, and a guessed rectangle would be worse
+    ;;; than none.
+    (if ext
       (progn
-        (setq ent (car ents)
-              obj (vlax-ename->vla-object ent))
-        (cond
-          ((pc:closedp ent) (setq skipped (1+ skipped)))
-          ((= (cdr (assoc 0 (entget ent))) "LWPOLYLINE")
-           ;;; Where the ends already meet, closing only sets the flag.
-           ;;; Where they do not, it also draws the missing segment -
-           ;;; which is the point of the command.
-           (if (apply 'pc:near (append (pc:ends ent obj) (list *pc:gap*)))
-             (setq closed (1+ closed))
-             (setq gap (1+ gap)))
-           (if (vl-catch-all-error-p
-                 (vl-catch-all-apply 'vla-put-closed
-                                     (list obj :vlax-true)))
-             (setq skipped (1+ skipped))))
-          (t (setq skipped (1+ skipped)))))
-      (setq pieces (1+ pieces))))
+        (setq src (vlax-ename->vla-object (car ents)))
+        (if (vl-catch-all-error-p
+              (vl-catch-all-apply 'pc:mkrect (list space ext src)))
+          (setq skipped (1+ skipped))
+          (progn
+            (if (= ans "Yes")
+              (foreach e ents (vl-catch-all-apply 'entdel (list e))))
+            (setq built (1+ built)))))
+      (setq skipped (1+ skipped))))
 
   (vla-endundomark doc)
-  (princ (strcat "\nClosed " (itoa (+ closed gap)) " outline(s)"))
-  (if (> gap 0)
-    (princ (strcat " - " (itoa gap)
-                   " of them had a real gap and gained a segment")))
-  (princ ".")
-  (if (> pieces 0)
-    (princ (strcat "\n" (itoa pieces)
-                   " outline(s) are drawn as separate pieces - join them"
-                   " with PEDIT first. PANELCOMP handles them as they are.")))
+  (princ (strcat "\nRebuilt " (itoa built)
+                 " outline(s) as closed rectangles on their real corners."))
+  (if (= ans "Yes")
+    (princ " Old geometry deleted.")
+    (princ " Old geometry kept - erase it once you have checked the sizes."))
   (if (> skipped 0)
-    (princ (strcat "\n" (itoa skipped) " already closed or not a polyline.")))
+    (princ (strcat "\n" (itoa skipped)
+                   " left alone - no clear pair of straight edges to"
+                   " measure between, or the outline is locked.")))
   (princ)
 )
 
@@ -724,7 +913,7 @@
 (princ "\nPANELCOMP.lsp loaded.")
 (princ "\n  PANELCOMP   compare panels, colour by type, write a summary")
 (princ "\n  PANELRESET  put a selection back to colour ByLayer")
-(princ "\n  PANELCLOSE  close open polyline panel outlines")
+(princ "\n  PANELCLOSE  rebuild panel outlines as closed rectangles")
 (princ)
 
 ;;; ============================================================ EOF
