@@ -153,16 +153,6 @@
   (if (vl-catch-all-error-p v) 0.0 v)
 )
 
-;;; Number of DXF group-10 points in ENT - vertex count for a
-;;; lightweight polyline, control-point count for a spline.
-(defun pc:vcount (ent / n)
-  (setq n 0)
-  (foreach pair (entget ent)
-    (if (= (car pair) 10) (setq n (1+ n)))
-  )
-  n
-)
-
 ;;; True when ENT is a shape that already closes on itself.
 (defun pc:closedp (ent / ed typ)
   (setq ed  (entget ent)
@@ -342,54 +332,40 @@
   obj
 )
 
-;;; Describe one piece of geometry inside a panel: its kind, its size,
-;;; and its centre measured from the panel's lower-left corner at OX OY.
-;;; Measuring from the panel corner is what makes it independent of
-;;; where the panel sits in the drawing.
+;;; The outline length of a piece, whatever kind of object holds it.
+(defun pc:perim (obj / v)
+  (setq v (pc:prop obj 'Circumference))
+  (if (zerop v) (setq v (pc:prop obj 'ArcLength)))
+  (if (zerop v) (setq v (pc:prop obj 'Length)))
+  v
+)
+
+;;; Describe one piece of geometry inside a panel: its size, its centre
+;;; measured from the panel's lower-left corner at OX OY, and two
+;;; measures of its shape - the side of a square of the same area, and
+;;; the length of its outline.
 ;;;
-;;; The measurements stay as numbers. Rounding them to a grid first and
-;;; comparing the results looks like it honours a tolerance but does
-;;; not: two holes a ten-thousandth of an inch apart, either side of a
-;;; grid line, round to different values and never match, however
-;;; generous the tolerance is set. Only KIND is exact - an entity type,
-;;; and a vertex count where the type alone says too little.
+;;; Nothing here records what the piece was DRAWN with. A hole is the
+;;; same hole whether the drawing holds it as a CIRCLE or as a closed
+;;; polyline of two half-circle bulges, which is what a DXF round trip
+;;; or a CAM import leaves behind, and the same goes for a slot built
+;;; from arcs and lines against one drawn as a polyline. What the panel
+;;; looks like is what decides whether it is the same part.
 ;;;
-;;; Returns (kind width height cx cy a b), where a and b carry whatever
-;;; the type needs beyond a bounding box.
-(defun pc:sig (ent obj bb ox oy / mn mx typ kind a b)
-  (setq mn   (car  bb)
-        mx   (cadr bb)
-        typ  (cdr (assoc 0 (entget ent)))
-        kind typ
-        a    0.0
-        b    0.0)
-  (cond
-    ;;; A circle's bounding box already carries its diameter.
-    ((= typ "CIRCLE"))
-    ;;; Two arcs can share a bounding box and still be different cuts.
-    ((= typ "ARC")
-     (setq a (pc:prop obj 'Radius)
-           b (pc:prop obj 'TotalAngle)))
-    ((= typ "ELLIPSE")
-     (setq a (pc:prop obj 'MajorRadius)
-           b (pc:prop obj 'MinorRadius)))
-    ;;; Slots and logo outlines: vertex count and enclosed area pull
-    ;;; apart shapes that happen to share a bounding box.
-    ((member typ '("LWPOLYLINE" "POLYLINE" "SPLINE"))
-     ;;; Held as the side of the equivalent square rather than the area
-     ;;; itself, so the one tolerance means the same thing here as it
-     ;;; does everywhere else. A thousandth of a square inch on a fifty
-     ;;; square inch logo is a far tighter demand than a thousandth of
-     ;;; an inch on a length, and would split logos that match.
-     (setq kind (strcat typ "|" (itoa (pc:vcount ent)))
-           a    (sqrt (abs (pc:prop obj 'Area)))))
-  )
-  (list kind
-        (- (car  mx) (car  mn))
+;;; Area and outline length are carried as lengths, not as an area and
+;;; not as a count, so the one tolerance means the same thing for every
+;;; measurement here as it does for a position.
+;;;
+;;; Returns (width height cx cy side perimeter).
+(defun pc:sig (ent obj bb ox oy / mn mx)
+  (setq mn (car  bb)
+        mx (cadr bb))
+  (list (- (car  mx) (car  mn))
         (- (cadr mx) (cadr mn))
         (- (/ (+ (car  mn) (car  mx)) 2.0) ox)
         (- (/ (+ (cadr mn) (cadr mx)) 2.0) oy)
-        a b)
+        (sqrt (abs (pc:prop obj 'Area)))
+        (pc:perim obj))
 )
 
 ;;; True when two measurements are the same to within *pc:tol*.
@@ -397,20 +373,18 @@
   (<= (abs (- a b)) *pc:tol*)
 )
 
-;;; True when two pieces of geometry are the same piece: same kind, and
-;;; every measurement agreeing to within the tolerance.
-(defun pc:sigeq (a b)
-  (and (= (car a) (car b))
-       (pc:close (cadr   a) (cadr   b))
-       (pc:close (caddr  a) (caddr  b))
-       (pc:close (cadddr a) (cadddr b))
-       (pc:close (nth 4  a) (nth 4  b))
-       (pc:close (nth 5  a) (nth 5  b))
-       (pc:close (nth 6  a) (nth 6  b)))
+;;; True when two pieces of geometry are the same piece: every
+;;; measurement agreeing to within the tolerance.
+(defun pc:sigeq (a b / i ok)
+  (setq i 0 ok t)
+  (while (and ok (< i 6))
+    (if (not (pc:close (nth i a) (nth i b))) (setq ok nil))
+    (setq i (1+ i)))
+  ok
 )
 
 ;;; Order two pieces so both panels' lists come out the same way round:
-;;; left to right, then bottom to top, then by kind, then by size.
+;;; left to right, then bottom to top, then by size and shape.
 ;;;
 ;;; Every comparison here is EXACT, deliberately. Ordering on "within a
 ;;; tolerance of each other" reads as the kinder choice and is a trap.
@@ -420,24 +394,21 @@
 ;;; first. Worse, VL-SORT DISCARDS one of any two elements its compare
 ;;; function cannot separate, and a tolerance-based order cannot
 ;;; separate concentric pieces at all: a counterbore, an annulus, or a
-;;; ring in a logo shares a centre and a kind with its neighbour, so one
-;;; of the pair was silently deleted from the fingerprint - and which
-;;; one depended on drawing order, which splits two identical panels.
+;;; ring in a logo shares a centre with its neighbour, so one of the
+;;; pair was silently deleted from the fingerprint - and which one
+;;; depended on drawing order, which splits two identical panels.
 ;;;
 ;;; Size is in the order for the same reason: without it, two circles on
 ;;; one centre are inseparable. Under an exact order two pieces are
 ;;; level only when every measurement is identical, which is a genuine
 ;;; stacked duplicate and is meant to collapse.
-(defun pc:siglt (a b)
-  (cond
-    ((/= (cadddr a) (cadddr b)) (< (cadddr a) (cadddr b)))   ; centre x
-    ((/= (nth 4  a) (nth 4  b)) (< (nth 4  a) (nth 4  b)))   ; centre y
-    ((not (= (car a) (car b)))  (< (car a) (car b)))          ; kind
-    ((/= (cadr  a) (cadr  b))   (< (cadr  a) (cadr  b)))      ; width
-    ((/= (caddr a) (caddr b))   (< (caddr a) (caddr b)))      ; height
-    ((/= (nth 5  a) (nth 5  b)) (< (nth 5  a) (nth 5  b)))
-    ((/= (nth 6  a) (nth 6  b)) (< (nth 6  a) (nth 6  b)))
-  )
+(defun pc:siglt (a b / i r)
+  ;;; centre x, centre y, width, height, area, perimeter
+  (setq i 0 r nil)
+  (foreach k '(2 3 0 1 4 5)
+    (if (and (null r) (/= (nth k a) (nth k b)))
+      (setq r (if (< (nth k a) (nth k b)) t 'no))))
+  (= r t)
 )
 
 ;;; True when two panels hold the same pieces in the same places. Both
@@ -1134,18 +1105,21 @@
 ;;; Everything one panel's fingerprint is built from, for a selection
 ;;; holding exactly one panel. Returns (ext from-edges sigs) or nil.
 (defun pc:panelinfo (ss lay / split outs content o ext edg ent obj bb
-                              cx cy sigs)
+                              cx cy sigs outside nobox)
   (setq split   (pc:outlines ss lay)
         outs    (car  split)
         content (cadr split))
   (if (/= (length outs) 1)
-    nil
+    ;;; Still return the counts: what the selection actually held is the
+    ;;; whole answer when it held the wrong thing.
+    (list nil nil nil
+          (list (sslength ss) (length outs) (length content) 0 0 0))
     (progn
       (setq o   (car outs)
             ext (pc:extents (car o))
             edg (if ext t nil))
       (if (null ext) (setq ext (cadr o)))
-      (setq sigs '())
+      (setq sigs '() outside 0 nobox 0)
       (foreach ent content
         (setq obj (vlax-ename->vla-object ent)
               bb  (pc:bbox obj))
@@ -1158,8 +1132,12 @@
               (setq sigs (cons (pc:sig ent obj bb
                                        (car  (car ext))
                                        (cadr (car ext)))
-                               sigs))))))
-      (list ext edg (vl-sort sigs 'pc:siglt))
+                               sigs))
+              (setq outside (1+ outside))))
+          (setq nobox (1+ nobox))))
+      (list ext edg (vl-sort sigs 'pc:siglt)
+            (list (sslength ss) (length outs) (length content)
+                  (length sigs) outside nobox))
     )
   )
 )
@@ -1174,20 +1152,20 @@
   (reverse out)
 )
 
-;;; The piece of LST sitting closest to SG, whatever its kind.
+;;; The piece of LST sitting closest to SG.
 (defun pc:nearest (sg lst / best bd d)
   (foreach o lst
-    (setq d (+ (abs (- (cadddr sg) (cadddr o)))
-               (abs (- (nth 4 sg) (nth 4 o)))))
+    (setq d (+ (abs (- (caddr  sg) (caddr  o)))
+               (abs (- (cadddr sg) (cadddr o)))))
     (if (or (null best) (< d bd)) (setq best o bd d)))
   best
 )
 
-;;; One line describing a piece: kind, size, and where it sits on the
-;;; panel.
+;;; One line describing a piece: size, and where it sits on the panel.
 (defun pc:sigline (sg)
-  (strcat (car sg) "  " (pc:fmtinch (cadr sg)) " x " (pc:fmtinch (caddr sg))
-          "  at (" (pc:fmtinch (cadddr sg)) ", " (pc:fmtinch (nth 4 sg)) ")")
+  (strcat (pc:fmtinch (car sg)) " x " (pc:fmtinch (cadr sg))
+          "  at (" (pc:fmtinch (caddr sg)) ", " (pc:fmtinch (cadddr sg)) ")"
+          "  outline " (pc:fmtinch (nth 5 sg)))
 )
 
 (defun c:PANELDIFF
@@ -1216,11 +1194,14 @@
 
   (setq a (pc:panelinfo ss1 lay)
         b (pc:panelinfo ss2 lay))
-  (if (or (null a) (null b))
+  (if (or (null (car a)) (null (car b)))
     (progn
       (princ (strcat "\nEach selection must hold exactly one panel"
-                     " outline on layer \"" lay "\". Select one panel at"
-                     " a time."))
+                     " outline on layer \"" lay "\": the first held "
+                     (itoa (cadr (cadddr a))) ", the second "
+                     (itoa (cadr (cadddr b)))
+                     ". Select one panel at a time, its outline and"
+                     " perforations together."))
       (exit)))
 
   (setq exta (car a) extb (car b)
@@ -1241,7 +1222,13 @@
       (pc:fmtinch (- (cadr (cadr extb)) (cadr (car extb))))
       (if (cadr b) "   (from edges)" "   (from bounding box)") "\\P"
       "  A pieces       =  " (itoa (length sga)) "\\P"
-      "  B pieces       =  " (itoa (length sgb)) "\\P\\P"))
+      "  B pieces       =  " (itoa (length sgb)) "\\P\\P"
+      "  A selection    =  " (itoa (car (cadddr a))) " object(s), "
+      (itoa (caddr (cadddr a))) " of them off the panel layer, "
+      (itoa (nth 4 (cadddr a))) " of those outside the outline\\P"
+      "  B selection    =  " (itoa (car (cadddr b))) " object(s), "
+      (itoa (caddr (cadddr b))) " of them off the panel layer, "
+      (itoa (nth 4 (cadddr b))) " of those outside the outline\\P\\P"))
 
   ;;; A panel measured off its edges and one measured off its bounding
   ;;; box have their corners in different places, and every position on
@@ -1258,9 +1245,24 @@
   (if (and (null ua) (null ub))
     (setq content-str
           (strcat content-str
-                  "  Every piece matches. These two panels are the same"
-                  " part - if PANELCOMP split them, the difference is in"
-                  " the panel size above."))
+                  (if (and (null sga) (null sgb))
+                    ;;; Nothing was compared, so nothing can be
+                    ;;; concluded. Calling that a match would be a
+                    ;;; verdict on an empty comparison.
+                    (strcat "  NO PERFORATIONS WERE FOUND IN EITHER"
+                            " PANEL, so nothing has been compared and"
+                            " this report says nothing about whether"
+                            " they match. Select each panel with a"
+                            " window taking in its outline AND its"
+                            " holes - a single click picks up the"
+                            " outline alone. If you did window them,"
+                            " read the selection counts above: holes"
+                            " drawn on the panel layer are read as"
+                            " outlines rather than as holes.")
+                    (strcat "  Every piece matches. These two panels are"
+                            " the same part - if PANELCOMP split them,"
+                            " the difference is in the panel size"
+                            " above."))))
     (progn
       (setq content-str
             (strcat content-str
@@ -1280,20 +1282,17 @@
                 (strcat content-str
                   "      B: " (pc:sigline near) "\\P"
                   "      -> "
-                  (cond
-                    ((not (= (car sg) (car near)))
-                     (strcat "different kind: " (car sg) " against "
-                             (car near)))
-                    (t
-                     (strcat "same kind, off by "
-                             (pc:fmtinch
-                               (max (abs (- (cadddr sg) (cadddr near)))
-                                    (abs (- (nth 4 sg) (nth 4 near)))))
-                             " in position, "
-                             (pc:fmtinch
-                               (max (abs (- (cadr  sg) (cadr  near)))
-                                    (abs (- (caddr sg) (caddr near)))))
-                             " in size")))
+                  (strcat "off by "
+                          (pc:fmtinch
+                            (max (abs (- (caddr  sg) (caddr  near)))
+                                 (abs (- (cadddr sg) (cadddr near)))))
+                          " in position, "
+                          (pc:fmtinch
+                            (max (abs (- (car  sg) (car  near)))
+                                 (abs (- (cadr sg) (cadr near)))))
+                          " in size, "
+                          (pc:fmtinch (abs (- (nth 5 sg) (nth 5 near))))
+                          " in outline length")
                   "\\P"))
               (setq content-str
                     (strcat content-str

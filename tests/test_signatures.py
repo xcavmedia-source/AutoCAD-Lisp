@@ -33,11 +33,11 @@ cases = [
 ]
 for name, e in cases:
     sig = sig_of(e)
-    print("    %-11s -> kind %-16s size %.3f x %.3f  a=%.3f b=%.3f"
-          % (name, sig[0], sig[1], sig[2], sig[5], sig[6]))
+    print("    %-11s -> size %.3f x %.3f  at (%.3f, %.3f)  side %.3f"
+          " outline %.3f" % ((name,) + tuple(sig)))
     check("%s yields a signature" % name,
-          isinstance(sig, list) and len(sig) == 7 and isinstance(sig[0], str),
-          True)
+          isinstance(sig, list) and len(sig) == 6
+          and all(isinstance(v, float) for v in sig), True)
 
 print("\nshapes that share a bounding box are still told apart")
 
@@ -45,8 +45,13 @@ def same(x, y):
     """Does the LISP call these two pieces the same piece?"""
     return truthy(call_fn('pc:sigeq', x, y, env=load_env()))
 
-arc = lambda sweep: Ent("ARC", HOLE_LAYER, bb(0,0,2,2),
-                        props={'radius': 1.0, 'totalangle': sweep})
+def arc(sweep, r=1.0):
+    """Same bounding box, different sweep - so only the arc's own
+    length and the area it cuts off can tell them apart."""
+    import math
+    return Ent("ARC", HOLE_LAYER, bb(0, 0, 2, 2),
+               props={'radius': r, 'arclength': r * sweep,
+                      'area': 0.5 * r * r * (sweep - math.sin(sweep))})
 check("arcs of different sweep differ",
       same(sig_of(arc(1.57)), sig_of(arc(3.14))), False)
 tri = poly([(0,0), (2,0), (2,2)], area=2.0)
@@ -85,6 +90,16 @@ check("so vl-sort keeps both", len(kept), 2)
 same_twice = call_fn('vl-sort', [small, small], Sym('pc:siglt'), env=env)
 check("a genuine stacked duplicate still collapses", len(same_twice), 1)
 
+print("\nthe same hole drawn two different ways is the same hole")
+import math
+c  = circle(12, 40, 1.5)
+cp = circle_as_poly(12, 40, 1.5)
+check("a CIRCLE and a bulged polyline match", same(sig_of(c), sig_of(cp)), True)
+sq = poly([(10.5,38.5), (13.5,38.5), (13.5,41.5), (10.5,41.5)], area=9.0)
+sq.props['length'] = 12.0
+check("but a square of the same bounding box does not",
+      same(sig_of(c), sig_of(sq)), False)
+
 print("\nPANELDIFF names the piece that disagreed")
 A = [(4,10,1.5), (12,10,1.5), (20,10,1.5), (12,40,3.0)]
 pa = sheet([A])
@@ -95,8 +110,8 @@ txt = r['text'].replace('\\P', '\n')
 print("\n".join("    " + l for l in txt.split("\n")[:16]))
 check("it reports both sizes", "A size" in txt and "B size" in txt, True)
 check("it finds the one piece that moved", "1 piece(s) of A" in txt, True)
-check("and says it is the same kind, just displaced",
-      "same kind, off by" in txt, True)
+check("and says how far it moved", "off by" in txt and "in position" in txt,
+      True)
 
 print("\nPANELDIFF says so when everything matches")
 r = run2(sheet([A]), sheet([A], x0=200.0))
@@ -145,7 +160,7 @@ KNOWN = set(SPECIAL) | {str(k) for k in BUILTIN} | {
     'vlax-put-property', 'vla-addlightweightpolyline', 'vla-addtext',
     'vla-get-layers', 'vla-item', 'vla-add', 'vla-put-layer',
     'vla-put-linetype', 'command', 'setvar', 'tblsearch', 'ssadd',
-    'vlax-vla-object->ename', 'sqrt'}
+    'vlax-vla-object->ename', 'sqrt', 'zerop'}
 check("no unknown function names",
       sorted(c for c in called if c not in KNOWN and c not in defined), [])
 print("    %d functions defined, %d distinct called" % (len(defined), len(called)))

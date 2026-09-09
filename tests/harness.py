@@ -40,7 +40,21 @@ def entget(e):
     return out + e.dxf
 
 def circle(cx, cy, r, layer=HOLE_LAYER):
-    return Ent("CIRCLE", layer, bb(cx-r, cy-r, cx+r, cy+r), props={'radius': r})
+    import math
+    return Ent("CIRCLE", layer, bb(cx-r, cy-r, cx+r, cy+r),
+               props={'radius': r, 'area': math.pi * r * r,
+                      'circumference': 2 * math.pi * r})
+
+def circle_as_poly(cx, cy, r, layer=HOLE_LAYER):
+    """The same hole as a closed polyline of two half-circle bulges -
+    what a DXF round trip or a CAM import leaves behind. Geometrically
+    identical to circle(); a different entity type entirely."""
+    import math
+    e = poly([(cx-r, cy), (cx+r, cy)], layer=layer, closed=True,
+             area=math.pi * r * r, bulges=[1.0, 1.0])
+    e.bbox = bb(cx-r, cy-r, cx+r, cy+r)
+    e.props['length'] = 2 * math.pi * r
+    return e
 
 def poly(pts, layer=HOLE_LAYER, closed=True, area=0.0, bulges=None):
     """`bulges[i]` arcs the segment leaving vertex i, as DXF group 42."""

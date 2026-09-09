@@ -307,6 +307,7 @@ BUILTIN.update({
     Sym('float'): lambda a: float(a[0]),
     Sym('rem'): lambda a: a[0] % a[1] if a[1] else 0,
     Sym('minusp'): lambda a: True if a[0] < 0 else None,
+    Sym('zerop'): lambda a: True if a[0] == 0 else None,
     Sym('logand'): lambda a: _fold(a, lambda p,q: p & q),
     Sym('not'): lambda a: None if truthy(a[0]) else True,
     Sym('null'): lambda a: None if truthy(a[0]) else True,
