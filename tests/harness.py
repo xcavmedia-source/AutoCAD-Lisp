@@ -240,14 +240,27 @@ def load_env(ents=None, mtext_out=None, answers=None):
     stub('pc:bbox', lambda a: [list(a[0].bbox[0]), list(a[0].bbox[1])])
     stub('pc:prop', lambda a: a[0].props.get(a[1], 0.0))
     stub('pc:activespace', lambda a: None)
+    # Perforation layers are left open by default, so the suites exercise
+    # the forgiving path; a test that wants the filter sets them itself.
+    G[Sym('*pc:perf-asked*')] = True
+    G[Sym('*pc:perf-layers*')] = None
     env.blocks, env.sysvars = blocks, sysvars
     return env
 
-def run2(ents_a, ents_b, panel_layer=PANEL_LAYER, command='c:paneldiff'):
-    """Run a command that asks for two selections in turn."""
-    mtext_out, sels = {}, [list(ents_a), list(ents_b)]
+def run2(ents_a, ents_b, panel_layer=PANEL_LAYER, command='c:paneldiff',
+         perf_layers=None):
+    """Run a command that picks two panels in turn. Models a click on
+    each outline: entsel hands back the outline, and the crossing window
+    that follows hands back everything in that panel."""
+    mtext_out = {}
+    picks = [[e for e in ents_a if e.layer == PANEL_LAYER][:1],
+             [e for e in ents_b if e.layer == PANEL_LAYER][:1]]
+    sels  = [list(ents_a), list(ents_b)]
     env = load_env(ents_a + ents_b, mtext_out)
+    env.vars[Sym('entsel')] = lambda a: (picks.pop(0) or None) if picks else None
     env.vars[Sym('ssget')] = lambda a: sels.pop(0) if sels else None
+    if perf_layers is not None:
+        env.vars[Sym('*pc:perf-layers*')] = perf_layers
     if panel_layer is not None:
         env.vars[Sym('*pc:panel-layer*')] = panel_layer
     try:
@@ -256,13 +269,16 @@ def run2(ents_a, ents_b, panel_layer=PANEL_LAYER, command='c:paneldiff'):
         bailed = True
     return {'text': mtext_out.get('text', ''), 'bailed': bailed}
 
-def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None):
+def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None,
+        perf_layers=None):
     """Run one command over `ents` and return what it produced.
     `answers` feeds the getkword prompts in order; None presses Enter."""
     mtext_out = {}
     env = load_env(ents, mtext_out, answers)
     if panel_layer is not None:
         env.vars[Sym('*pc:panel-layer*')] = panel_layer
+    if perf_layers is not None:
+        env.vars[Sym('*pc:perf-layers*')] = perf_layers
     try:
         ev([Sym(command)], env)
         bailed = False

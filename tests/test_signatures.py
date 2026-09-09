@@ -117,6 +117,24 @@ print("\nPANELDIFF says so when everything matches")
 r = run2(sheet([A]), sheet([A], x0=200.0))
 check("clean bill of health", "Every piece matches" in r['text'], True)
 
+print("\nnaming the perforation layer keeps stray geometry out")
+A = [(4,10,1.5), (12,10,1.5), (20,10,1.5), (12,40,3.0)]
+# an edge tick on its own layer, on one panel only
+ents = sheet([A, A])
+tick = Ent("LINE", "TICKS", bb(0, 30, 0.25, 30),
+           dxf=[dot(10, [0.0,30.0,0.0]), dot(11, [0.25,30.0,0.0])],
+           p1=[0.0,30.0,0.0], p2=[0.25,30.0,0.0])
+ents.append(tick)
+check("left open, the tick counts as a hole and splits them",
+      len(types_in(run(ents)['text'])), 2)
+ents2 = sheet([A, A]) + [Ent("LINE", "TICKS", bb(0, 30, 0.25, 30),
+                             dxf=[dot(10, [0.0,30.0,0.0]),
+                                  dot(11, [0.25,30.0,0.0])],
+                             p1=[0.0,30.0,0.0], p2=[0.25,30.0,0.0])]
+env_run = run(ents2, perf_layers=[HOLE_LAYER])
+check("naming the perforation layer, they match",
+      len(types_in(env_run['text'])), 1)
+
 print("\nstatic sweep: every function called is one that exists")
 forms = read_all(io.open(LSP, encoding='utf-8').read())
 defined, called = set(), set()

@@ -40,7 +40,8 @@ summary it wrote and the colours it applied.
   left overshooting their corner, and a bulged corner clip that sweeps
   outside it - both of which must still come out 24 x 96.
 - **test_signatures.py** - the rounding helpers, every branch of
-  `pc:sig`, shapes that share a bounding box, `PANELDIFF`, and a static
+  `pc:sig`, shapes that share a bounding box, the perforation-layer
+  filter, `PANELDIFF`, and a static
   sweep confirming every function the file calls is one that exists.
   That last check reaches the branches the other suites never execute.
   It also pins down the tolerance: two holes a ten-thousandth of an inch

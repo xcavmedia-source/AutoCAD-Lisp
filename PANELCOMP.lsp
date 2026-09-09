@@ -73,6 +73,16 @@
 ;;; the drawing session.
 (setq *pc:panel-layer* "")
 
+;;; Which layers hold the perforations. Empty leaves it open: anything
+;;; not on the panel layer counts, which is the forgiving default and
+;;; the right one when holes, slots and logo art are spread over several
+;;; layers. Naming them instead keeps stray geometry out of the
+;;; fingerprint - edge ticks, weld marks, construction lines - which
+;;; otherwise reads as perforations and splits panels that match.
+;;; PANELCOMP asks once a session and remembers the answer.
+(setq *pc:perf-layers* '())
+(setq *pc:perf-asked*  nil)
+
 ;;; Object types that are never part of a perforation pattern. Tags,
 ;;; dimensions and the like are ignored rather than fingerprinted, so
 ;;; a panel labelled in the drawing still matches its unlabelled twin.
@@ -551,6 +561,60 @@
   *pc:panel-layer*
 )
 
+;;; Ask which layers hold the perforations, by picking one of each.
+;;; Answering ENTER straight away leaves it open.
+(defun pc:asklayers (/ pick lay out done)
+  (setq out '() done nil)
+  (while (not done)
+    (setq pick (entsel
+                 (if out
+                   "\nPick a perforation on another layer, or ENTER when done: "
+                   (strcat "\nPick one perforation to work from its layer"
+                           " alone, or ENTER to use everything that is not"
+                           " a panel outline: "))))
+    (if pick
+      (progn
+        (setq lay (cdr (assoc 8 (entget (car pick)))))
+        (if (not (member lay out)) (setq out (cons lay out)))
+        (princ (strcat "  [" lay "]")))
+      (setq done t)))
+  (reverse out)
+)
+
+;;; Ask once a session, then report what is in force.
+(defun pc:perflayers (/ l)
+  (if (null *pc:perf-asked*)
+    (setq *pc:perf-layers* (pc:asklayers)
+          *pc:perf-asked*  t))
+  (if *pc:perf-layers*
+    (progn
+      (setq l "")
+      (foreach n *pc:perf-layers*
+        (setq l (strcat l (if (= l "") "" ", ") "\"" n "\"")))
+      (princ (strcat "\nPerforations: layer(s) " l)))
+    (princ "\nPerforations: everything that is not a panel outline"))
+  *pc:perf-layers*
+)
+
+;;; Pick one panel outline and gather it together with everything
+;;; sitting inside it, so a single click on the outline is enough. A
+;;; window that has to take in the holes as well is easy to get wrong,
+;;; and getting it wrong looks exactly like the panels not matching.
+(defun pc:pickpanel (msg / pick bb)
+  (setq pick (entsel msg))
+  (if pick
+    (if (setq bb (pc:bbox (vlax-ename->vla-object (car pick))))
+      ;;; Crossing, not window, so a hole broken by the panel edge is
+      ;;; taken in too.
+      (ssget "_C"
+             (list (- (car  (car  bb)) *pc:gap*)
+                   (- (cadr (car  bb)) *pc:gap*))
+             (list (+ (car  (cadr bb)) *pc:gap*)
+                   (+ (cadr (cadr bb)) *pc:gap*)))
+    )
+  )
+)
+
 ;;; Split selection set SS into panel outlines and panel content.
 ;;; Returns (outlines content), where each outline is
 ;;; (list-of-enames bbox) and content is a flat list of enames.
@@ -563,7 +627,10 @@
           obj (vlax-ename->vla-object ent))
     (cond
       ((/= (cdr (assoc 8 (entget ent))) lay)
-       (if (not (member (cdr (assoc 0 (entget ent))) *pc:ignore*))
+       (if (and (not (member (cdr (assoc 0 (entget ent))) *pc:ignore*))
+                (or (null *pc:perf-layers*)
+                    (member (cdr (assoc 8 (entget ent)))
+                            *pc:perf-layers*)))
          (setq content (cons ent content))))
       ((null (setq bb (pc:bbox obj))) nil)
       ((pc:closedp ent)
@@ -617,8 +684,9 @@
         space   (pc:activespace doc))
   (vla-startundomark doc)
 
-  ;;; --- which layer are the outlines on? -------------------------
+  ;;; --- which layers are we working from? ------------------------
   (setq lay (pc:asklayer))
+  (pc:perflayers)
 
   ;;; --- selection ------------------------------------------------
   (princ "\nSelect the panels to compare - outlines and perforations together: ")
@@ -1185,10 +1253,9 @@
         space   (pc:activespace doc)
         lay     (pc:asklayer))
 
-  (princ "\nSelect the FIRST panel - outline and perforations: ")
-  (setq ss1 (ssget))
-  (princ "\nSelect the SECOND panel - outline and perforations: ")
-  (setq ss2 (ssget))
+  (pc:perflayers)
+  (setq ss1 (pc:pickpanel "\nPick the FIRST panel's outline: ")
+        ss2 (pc:pickpanel "\nPick the SECOND panel's outline: "))
   (if (or (null ss1) (null ss2))
     (progn (princ "\nTwo panels are needed - command cancelled.") (exit)))
 
