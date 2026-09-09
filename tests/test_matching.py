@@ -156,6 +156,42 @@ check("the fragment shows up as an empty panel",
       any('no perforations at all' in n for n in notes(r['text'])), True)
 check("and the real panels still grouped", types_in(r['text'])[0], ('10', 2, 5))
 
+print("\nconcentric holes survive - a counterbore, or a ring in a logo")
+# the same panel twice, the concentric pair drawn in opposite orders
+base = [(4,10,1.5), (20,10,1.5)]
+r = run(sheet([base + [(12,40,1.0), (12,40,3.0)]])
+        + sheet([base + [(12,40,3.0), (12,40,1.0)]], x0=200.0))
+check("draw order does not split them", len(types_in(r['text'])), 1)
+check("all four holes counted on each", types_in(r['text'])[0][2], 4)
+check("and nothing is blamed on stacked duplicates",
+      any('stacked duplicate' in n for n in notes(r['text'])), False)
+
+print("\ngenuinely stacked duplicates are still caught")
+dup = sheet([base + [(12,40,3.0), (12,40,3.0)]])
+r = run(dup + sheet([base + [(12,40,3.0)]], x0=200.0))
+check("reported", any('stacked duplicate' in n for n in notes(r['text'])), True)
+
+print("\nsub-tolerance jitter reordering the holes is absorbed")
+# sorted by centre-x, these two panels hand back their holes in opposite
+# orders, though every hole is within tolerance of its counterpart
+ja = [(4.0000, 10, 1.5), (4.0003, 5, 1.5), (12, 20, 1.5)]
+jb = [(4.0003, 10, 1.5), (4.0000, 5, 1.5), (12, 20, 1.5)]
+check("still one part", len(types_in(run(sheet([ja, jb]))['text'])), 1)
+
+print("\ntolerance does not accumulate across a group")
+# six panels, each 0.0008 from the last: first and last are 0.004 apart,
+# four times the tolerance, and must not all be one part
+drift = [[(4 + i * 0.0008, 10, 1.5), (12, 10, 1.5), (20, 10, 1.5)]
+         for i in range(6)]
+r = run(sheet(drift))
+check("the chain does not collapse into one type",
+      len(types_in(r['text'])) > 1, True)
+# but panels genuinely within tolerance of the first still group
+close = [[(4 + i * 0.0002, 10, 1.5), (12, 10, 1.5), (20, 10, 1.5)]
+         for i in range(4)]
+check("while panels inside the tolerance still group",
+      len(types_in(run(sheet(close))['text'])), 1)
+
 print("\neach type is gathered into one movable block")
 # three panels: two of pattern A, one of pattern B
 B2 = A[:4]

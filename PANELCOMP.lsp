@@ -52,9 +52,12 @@
 
 ;;; ---- configuration ---------------------------------------------
 
-;;; Geometry is compared after snapping to this many drawing units.
+;;; How far two measurements can differ and still count as the same.
 ;;; 0.001 = one thousandth of an inch: tight enough to keep real part
 ;;; differences apart, loose enough to absorb rounding in the DWG.
+;;; This is a true tolerance - measurements are compared against it, not
+;;; rounded to it - so two holes a ten-thousandth of an inch apart are
+;;; the same hole however they sit relative to any grid.
 (setq *pc:tol* 0.001)
 
 ;;; How far apart two pieces of an outline can sit and still be read as
@@ -96,14 +99,6 @@
 
 
 ;;; ---- internal helpers ------------------------------------------
-
-;;; Snap VAL to the comparison tolerance and return it as a whole
-;;; number of tolerance units. Integers compare exactly, which is what
-;;; the fingerprints rely on; rounded reals do not.
-(defun pc:snap (val / n)
-  (setq n (/ val *pc:tol*))
-  (if (minusp n) (fix (- n 0.5)) (fix (+ n 0.5)))
-)
 
 ;;; Largest integer <= V. FIX truncates toward zero, which would fold
 ;;; the grid cells either side of an axis into one.
@@ -381,8 +376,13 @@
     ;;; Slots and logo outlines: vertex count and enclosed area pull
     ;;; apart shapes that happen to share a bounding box.
     ((member typ '("LWPOLYLINE" "POLYLINE" "SPLINE"))
+     ;;; Held as the side of the equivalent square rather than the area
+     ;;; itself, so the one tolerance means the same thing here as it
+     ;;; does everywhere else. A thousandth of a square inch on a fifty
+     ;;; square inch logo is a far tighter demand than a thousandth of
+     ;;; an inch on a length, and would split logos that match.
      (setq kind (strcat typ "|" (itoa (pc:vcount ent)))
-           a    (pc:prop obj 'Area)))
+           a    (sqrt (abs (pc:prop obj 'Area)))))
   )
   (list kind
         (- (car  mx) (car  mn))
@@ -409,15 +409,34 @@
        (pc:close (nth 6  a) (nth 6  b)))
 )
 
-;;; Order two pieces: left to right, then bottom to top, then by kind.
-;;; Positions within a tolerance of each other count as level here, so a
-;;; hair of difference between two panels cannot hand back their holes
-;;; in a different order.
+;;; Order two pieces so both panels' lists come out the same way round:
+;;; left to right, then bottom to top, then by kind, then by size.
+;;;
+;;; Every comparison here is EXACT, deliberately. Ordering on "within a
+;;; tolerance of each other" reads as the kinder choice and is a trap.
+;;; It is not transitive - three holes spaced 0.0008 apart give a level
+;;; with b, b level with c, but a below c - so the order comes out
+;;; differently depending on which piece the drawing happens to list
+;;; first. Worse, VL-SORT DISCARDS one of any two elements its compare
+;;; function cannot separate, and a tolerance-based order cannot
+;;; separate concentric pieces at all: a counterbore, an annulus, or a
+;;; ring in a logo shares a centre and a kind with its neighbour, so one
+;;; of the pair was silently deleted from the fingerprint - and which
+;;; one depended on drawing order, which splits two identical panels.
+;;;
+;;; Size is in the order for the same reason: without it, two circles on
+;;; one centre are inseparable. Under an exact order two pieces are
+;;; level only when every measurement is identical, which is a genuine
+;;; stacked duplicate and is meant to collapse.
 (defun pc:siglt (a b)
   (cond
-    ((not (pc:close (cadddr a) (cadddr b))) (< (cadddr a) (cadddr b)))
-    ((not (pc:close (nth 4  a) (nth 4  b))) (< (nth 4  a) (nth 4  b)))
-    ((not (= (car a) (car b)))              (< (car a) (car b)))
+    ((/= (cadddr a) (cadddr b)) (< (cadddr a) (cadddr b)))   ; centre x
+    ((/= (nth 4  a) (nth 4  b)) (< (nth 4  a) (nth 4  b)))   ; centre y
+    ((not (= (car a) (car b)))  (< (car a) (car b)))          ; kind
+    ((/= (cadr  a) (cadr  b))   (< (cadr  a) (cadr  b)))      ; width
+    ((/= (caddr a) (caddr b))   (< (caddr a) (caddr b)))      ; height
+    ((/= (nth 5  a) (nth 5  b)) (< (nth 5  a) (nth 5  b)))
+    ((/= (nth 6  a) (nth 6  b)) (< (nth 6  a) (nth 6  b)))
   )
 )
 
@@ -695,12 +714,16 @@
   (setq cs (max (/ sumw idx) (/ sumh idx)))
   (if (<= cs 0.0) (setq cs 1.0))
 
-  (setq cells '())
+  ;;; Widened by the same slack the containment test below allows, or a
+  ;;; hole sitting just outside a panel edge - one broken by the edge -
+  ;;; can fall in a cell the panel was never registered in and be
+  ;;; written off as an orphan.
+  (setq cells '() eps (* *pc:tol* 10.0))
   (foreach r recs
-    (setq ix0 (pc:ifloor (/ (car  (caddr  r)) cs))
-          ix1 (pc:ifloor (/ (car  (cadddr r)) cs))
-          iy0 (pc:ifloor (/ (cadr (caddr  r)) cs))
-          iy1 (pc:ifloor (/ (cadr (cadddr r)) cs))
+    (setq ix0 (pc:ifloor (/ (- (car  (caddr  r)) eps) cs))
+          ix1 (pc:ifloor (/ (+ (car  (cadddr r)) eps) cs))
+          iy0 (pc:ifloor (/ (- (cadr (caddr  r)) eps) cs))
+          iy1 (pc:ifloor (/ (+ (cadr (cadddr r)) eps) cs))
           ix  ix0)
     (while (<= ix ix1)
       (setq iy iy0)
@@ -715,7 +738,7 @@
 
   ;;; --- put every piece of content inside its panel --------------
   (setq hmap '() emap '() orphans 0 curidx nil
-        cursigs '() curents '() eps (* *pc:tol* 10.0))
+        cursigs '() curents '())
   (foreach ent content
     (setq obj (vlax-ename->vla-object ent)
           bb  (pc:bbox obj))
@@ -790,7 +813,14 @@
                (pc:listeq sigs (cadr g)))
         (setq grp g)))
     (if grp
-      (setq groups (subst (list gkey sigs (cons r (caddr grp)) (cadddr grp))
+      ;;; The group keeps the fingerprint of its FIRST member. Replacing
+      ;;; it with each new arrival lets the yardstick walk: panel 2 a
+      ;;; tolerance from panel 1, panel 3 a tolerance from panel 2, and
+      ;;; nothing bounds how far the last is from the first. Six panels
+      ;;; drifting 0.0008 each ended up 0.004 apart - four times the
+      ;;; tolerance - and still counted as one part.
+      (setq groups (subst (list gkey (cadr grp) (cons r (caddr grp))
+                                (cadddr grp))
                           grp groups))
       (setq groups (cons (list gkey sigs (list r) (list pw ph raw))
                          groups))))

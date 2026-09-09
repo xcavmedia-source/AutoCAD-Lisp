@@ -3,16 +3,20 @@ import io
 from harness import *
 from autolisp import truthy
 
-print("\nrounding and flooring")
-# The exact half is not worth asserting: 1.0005 / 0.001 is
-# 1000.4999999999999 in binary, so it lands below the half and rounds
-# down. AutoLISP uses the same doubles and does the same.
-check("pc:snap rounds up past half",    call_fn('pc:snap', 1.0006), 1001)
-check("pc:snap keeps sub-tolerance",    call_fn('pc:snap', 1.0004), 1000)
-check("pc:snap rounds away from zero",  call_fn('pc:snap', -1.0006), -1001)
+print("\ncell flooring")
 check("pc:ifloor goes down below zero", call_fn('pc:ifloor', -0.5), -1)
 check("pc:ifloor leaves whole numbers", call_fn('pc:ifloor', -2.0), -2)
 check("pc:ifloor truncates above zero", call_fn('pc:ifloor', 0.5), 0)
+
+print("\npc:close is a tolerance, not a grid")
+check("a ten-thousandth apart is the same", 
+      truthy(call_fn('pc:close', 4.00045, 4.00055)), True)
+# not asserting the exact boundary: 4.001 - 4.0 is 0.0010000000000002
+# in binary, so the edge itself is fuzzy and testing it proves nothing
+check("just inside the tolerance counts",
+      truthy(call_fn('pc:close', 4.0, 4.0009)), True)
+check("past the tolerance does not",
+      truthy(call_fn('pc:close', 4.0, 4.0011)), False)
 
 print("\npc:sig covers every entity branch")
 PROPS = {'radius': 2.0, 'totalangle': 1.5708, 'majorradius': 4.0,
@@ -69,16 +73,17 @@ far = Ent("CIRCLE", HOLE_LAYER, bb(4.01-1.5, 8.5, 4.01+1.5, 11.5),
 check("a hundredth of an inch apart is not",
       same(sig_of(near[0]), sig_of(far)), False)
 
-print("\nordering survives a hair of difference between panels")
+print("\nordering is a strict total order, so vl-sort keeps everything")
 env = load_env()
 def lt(x, y): return truthy(call_fn('pc:siglt', x, y, env=env))
-h1 = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0, 0, 2, 2), props={'radius': 1}))
-h2 = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0, 4, 2, 6), props={'radius': 1}))
-h1b = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0.0004, 0, 2.0004, 2),
-                 props={'radius': 1}))
-check("holes level in x order by y", lt(h1, h2), True)
-check("and a sub-tolerance nudge does not flip them", lt(h1b, h2), True)
-check("the order is not reversible", lt(h2, h1), False)
+small = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(11,39,13,41), props={'radius':1.0}))
+big   = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(9,37,15,43),  props={'radius':3.0}))
+check("concentric circles are orderable by size", lt(small, big), True)
+check("and the order is not reversible", lt(big, small), False)
+kept = call_fn('vl-sort', [small, big], Sym('pc:siglt'), env=env)
+check("so vl-sort keeps both", len(kept), 2)
+same_twice = call_fn('vl-sort', [small, small], Sym('pc:siglt'), env=env)
+check("a genuine stacked duplicate still collapses", len(same_twice), 1)
 
 print("\nPANELDIFF names the piece that disagreed")
 A = [(4,10,1.5), (12,10,1.5), (20,10,1.5), (12,40,3.0)]
@@ -140,7 +145,7 @@ KNOWN = set(SPECIAL) | {str(k) for k in BUILTIN} | {
     'vlax-put-property', 'vla-addlightweightpolyline', 'vla-addtext',
     'vla-get-layers', 'vla-item', 'vla-add', 'vla-put-layer',
     'vla-put-linetype', 'command', 'setvar', 'tblsearch', 'ssadd',
-    'vlax-vla-object->ename'}
+    'vlax-vla-object->ename', 'sqrt'}
 check("no unknown function names",
       sorted(c for c in called if c not in KNOWN and c not in defined), [])
 print("    %d functions defined, %d distinct called" % (len(defined), len(called)))
