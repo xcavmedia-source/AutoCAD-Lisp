@@ -1,6 +1,7 @@
 """The fingerprint helpers, and a sweep for names that do not exist."""
 import io
 from harness import *
+from autolisp import truthy
 
 print("\nrounding and flooring")
 # The exact half is not worth asserting: 1.0005 / 0.001 is
@@ -28,22 +29,73 @@ cases = [
 ]
 for name, e in cases:
     sig = sig_of(e)
-    print("    %-11s -> %s" % (name, sig))
-    check("%s yields a signature" % name, isinstance(sig, str) and bool(sig), True)
+    print("    %-11s -> kind %-16s size %.3f x %.3f  a=%.3f b=%.3f"
+          % (name, sig[0], sig[1], sig[2], sig[5], sig[6]))
+    check("%s yields a signature" % name,
+          isinstance(sig, list) and len(sig) == 7 and isinstance(sig[0], str),
+          True)
 
 print("\nshapes that share a bounding box are still told apart")
+
+def same(x, y):
+    """Does the LISP call these two pieces the same piece?"""
+    return truthy(call_fn('pc:sigeq', x, y, env=load_env()))
+
 arc = lambda sweep: Ent("ARC", HOLE_LAYER, bb(0,0,2,2),
                         props={'radius': 1.0, 'totalangle': sweep})
-check("arcs of different sweep differ", sig_of(arc(1.57)) != sig_of(arc(3.14)), True)
+check("arcs of different sweep differ",
+      same(sig_of(arc(1.57)), sig_of(arc(3.14))), False)
 tri = poly([(0,0), (2,0), (2,2)], area=2.0)
 sq  = poly([(0,0), (2,0), (2,2), (0,2)], area=4.0)
-check("a triangle and a square differ", sig_of(tri) != sig_of(sq), True)
+check("a triangle and a square differ", same(sig_of(tri), sig_of(sq)), False)
 
 print("\nmalformed input does not blow up")
 env = load_env()
 env.vars[Sym('entget')] = lambda a: [dot(0, "LWPOLYLINE"), dot(8, "X")]
 check("pc:closedp survives a missing group 70",
       call_fn('pc:closedp', tri, env=env) in (None, False), True)
+
+print("\ntolerance is a tolerance, not a grid")
+# 4.00045 and 4.00055 sit either side of a 0.001 grid line. Rounding
+# first put them in different types; comparing with a tolerance must not.
+near = [Ent("CIRCLE", HOLE_LAYER, bb(4.00045-1.5, 8.5, 4.00045+1.5, 11.5),
+            props={'radius': 1.5}),
+        Ent("CIRCLE", HOLE_LAYER, bb(4.00055-1.5, 8.5, 4.00055+1.5, 11.5),
+            props={'radius': 1.5})]
+check("a ten-thousandth of an inch apart is the same hole",
+      same(sig_of(near[0]), sig_of(near[1])), True)
+far = Ent("CIRCLE", HOLE_LAYER, bb(4.01-1.5, 8.5, 4.01+1.5, 11.5),
+          props={'radius': 1.5})
+check("a hundredth of an inch apart is not",
+      same(sig_of(near[0]), sig_of(far)), False)
+
+print("\nordering survives a hair of difference between panels")
+env = load_env()
+def lt(x, y): return truthy(call_fn('pc:siglt', x, y, env=env))
+h1 = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0, 0, 2, 2), props={'radius': 1}))
+h2 = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0, 4, 2, 6), props={'radius': 1}))
+h1b = sig_of(Ent("CIRCLE", HOLE_LAYER, bb(0.0004, 0, 2.0004, 2),
+                 props={'radius': 1}))
+check("holes level in x order by y", lt(h1, h2), True)
+check("and a sub-tolerance nudge does not flip them", lt(h1b, h2), True)
+check("the order is not reversible", lt(h2, h1), False)
+
+print("\nPANELDIFF names the piece that disagreed")
+A = [(4,10,1.5), (12,10,1.5), (20,10,1.5), (12,40,3.0)]
+pa = sheet([A])
+pb = sheet([[(4, 10, 1.5), (12, 10, 1.5), (20, 10, 1.5), (12, 40.05, 3.0)]],
+           x0=200.0)
+r = run2(pa, pb)
+txt = r['text'].replace('\\P', '\n')
+print("\n".join("    " + l for l in txt.split("\n")[:16]))
+check("it reports both sizes", "A size" in txt and "B size" in txt, True)
+check("it finds the one piece that moved", "1 piece(s) of A" in txt, True)
+check("and says it is the same kind, just displaced",
+      "same kind, off by" in txt, True)
+
+print("\nPANELDIFF says so when everything matches")
+r = run2(sheet([A]), sheet([A], x0=200.0))
+check("clean bill of health", "Every piece matches" in r['text'], True)
 
 print("\nstatic sweep: every function called is one that exists")
 forms = read_all(io.open(LSP, encoding='utf-8').read())

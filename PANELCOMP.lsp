@@ -42,6 +42,7 @@
 ;;; Commands : PANELCOMP    compare, colour and report
 ;;;            PANELRESET   put a selection back to colour ByLayer
 ;;;            PANELCLOSE   rebuild outlines as closed rectangles
+;;;            PANELDIFF    say why two panels did not match
 ;;;
 ;;; Requirements : AutoCAD 2000+ with Visual LISP / ActiveX support
 ;;; ============================================================
@@ -346,37 +347,100 @@
   obj
 )
 
-;;; Describe one piece of geometry inside a panel as a string: its
-;;; type, its size, and its centre measured from the panel's
-;;; lower-left corner at OX OY. Because the position is relative, the
-;;; same hole in the same place on two panels yields the same string
-;;; wherever in the drawing those panels happen to sit.
-(defun pc:sig (ent obj bb ox oy / mn mx typ s)
-  (setq mn  (car  bb)
-        mx  (cadr bb)
-        typ (cdr (assoc 0 (entget ent)))
-        s   (strcat typ
-              "|" (itoa (pc:snap (- (car  mx) (car  mn))))
-              "|" (itoa (pc:snap (- (cadr mx) (cadr mn))))
-              "|" (itoa (pc:snap (- (/ (+ (car  mn) (car  mx)) 2.0) ox)))
-              "|" (itoa (pc:snap (- (/ (+ (cadr mn) (cadr mx)) 2.0) oy)))))
+;;; Describe one piece of geometry inside a panel: its kind, its size,
+;;; and its centre measured from the panel's lower-left corner at OX OY.
+;;; Measuring from the panel corner is what makes it independent of
+;;; where the panel sits in the drawing.
+;;;
+;;; The measurements stay as numbers. Rounding them to a grid first and
+;;; comparing the results looks like it honours a tolerance but does
+;;; not: two holes a ten-thousandth of an inch apart, either side of a
+;;; grid line, round to different values and never match, however
+;;; generous the tolerance is set. Only KIND is exact - an entity type,
+;;; and a vertex count where the type alone says too little.
+;;;
+;;; Returns (kind width height cx cy a b), where a and b carry whatever
+;;; the type needs beyond a bounding box.
+(defun pc:sig (ent obj bb ox oy / mn mx typ kind a b)
+  (setq mn   (car  bb)
+        mx   (cadr bb)
+        typ  (cdr (assoc 0 (entget ent)))
+        kind typ
+        a    0.0
+        b    0.0)
   (cond
     ;;; A circle's bounding box already carries its diameter.
-    ((= typ "CIRCLE") s)
+    ((= typ "CIRCLE"))
     ;;; Two arcs can share a bounding box and still be different cuts.
     ((= typ "ARC")
-     (strcat s "|" (itoa (pc:snap (pc:prop obj 'Radius)))
-               "|" (itoa (pc:snap (pc:prop obj 'TotalAngle)))))
+     (setq a (pc:prop obj 'Radius)
+           b (pc:prop obj 'TotalAngle)))
     ((= typ "ELLIPSE")
-     (strcat s "|" (itoa (pc:snap (pc:prop obj 'MajorRadius)))
-               "|" (itoa (pc:snap (pc:prop obj 'MinorRadius)))))
+     (setq a (pc:prop obj 'MajorRadius)
+           b (pc:prop obj 'MinorRadius)))
     ;;; Slots and logo outlines: vertex count and enclosed area pull
     ;;; apart shapes that happen to share a bounding box.
     ((member typ '("LWPOLYLINE" "POLYLINE" "SPLINE"))
-     (strcat s "|" (itoa (pc:vcount ent))
-               "|" (itoa (pc:snap (pc:prop obj 'Area)))))
-    (t s)
+     (setq kind (strcat typ "|" (itoa (pc:vcount ent)))
+           a    (pc:prop obj 'Area)))
   )
+  (list kind
+        (- (car  mx) (car  mn))
+        (- (cadr mx) (cadr mn))
+        (- (/ (+ (car  mn) (car  mx)) 2.0) ox)
+        (- (/ (+ (cadr mn) (cadr mx)) 2.0) oy)
+        a b)
+)
+
+;;; True when two measurements are the same to within *pc:tol*.
+(defun pc:close (a b)
+  (<= (abs (- a b)) *pc:tol*)
+)
+
+;;; True when two pieces of geometry are the same piece: same kind, and
+;;; every measurement agreeing to within the tolerance.
+(defun pc:sigeq (a b)
+  (and (= (car a) (car b))
+       (pc:close (cadr   a) (cadr   b))
+       (pc:close (caddr  a) (caddr  b))
+       (pc:close (cadddr a) (cadddr b))
+       (pc:close (nth 4  a) (nth 4  b))
+       (pc:close (nth 5  a) (nth 5  b))
+       (pc:close (nth 6  a) (nth 6  b)))
+)
+
+;;; Order two pieces: left to right, then bottom to top, then by kind.
+;;; Positions within a tolerance of each other count as level here, so a
+;;; hair of difference between two panels cannot hand back their holes
+;;; in a different order.
+(defun pc:siglt (a b)
+  (cond
+    ((not (pc:close (cadddr a) (cadddr b))) (< (cadddr a) (cadddr b)))
+    ((not (pc:close (nth 4  a) (nth 4  b))) (< (nth 4  a) (nth 4  b)))
+    ((not (= (car a) (car b)))              (< (car a) (car b)))
+  )
+)
+
+;;; True when two panels hold the same pieces in the same places. Both
+;;; lists are already ordered, so this walks them in step and stops at
+;;; the first real disagreement. Where a pair disagrees it tries them
+;;; crossed over as well: two holes sitting within a tolerance of each
+;;; other can come out of the sort either way round, and that is a
+;;; difference in order, not in the panel.
+(defun pc:listeq (a b / ok)
+  (setq ok t)
+  (while (and ok a b)
+    (cond
+      ((pc:sigeq (car a) (car b))
+       (setq a (cdr a) b (cdr b)))
+      ((and (cdr a) (cdr b)
+            (pc:sigeq (car a) (cadr b))
+            (pc:sigeq (cadr a) (car b)))
+       (setq a (cddr a) b (cddr b)))
+      (t (setq ok nil))
+    )
+  )
+  (and ok (null a) (null b))
 )
 
 ;;; Order groups by quantity, largest first. Written out longhand
@@ -707,20 +771,23 @@
           ph   (- (cadr (cadddr r)) (cadr (caddr r)))
           ;;; Sorting makes the fingerprint independent of the order
           ;;; the holes were drawn in.
-          sigs (if sigs (vl-sort sigs '<) '())
-          ;;; Cheap key first: only patterns agreeing on hole count and
-          ;;; panel size are worth comparing hole by hole. The raw
-          ;;; count is part of it, so a panel carrying stacked
-          ;;; duplicate geometry never passes for a clean one.
-          gkey (strcat (itoa raw) "|" (itoa (pc:snap pw))
-                       "|" (itoa (pc:snap ph))))
+          sigs (if sigs (vl-sort sigs 'pc:siglt) '())
+          ;;; Hole count is the only cheap key that can be trusted: it
+          ;;; is a whole number, so unlike a rounded measurement it
+          ;;; cannot fall either side of anything. Size is checked with
+          ;;; the tolerance below, alongside the holes themselves.
+          gkey (itoa raw))
     (if (/= raw (length sigs)) (setq dupes (1+ dupes)))
     ;;; A panel with nothing in it is usually not a panel: it is a piece
     ;;; of some outline that failed to join the rest of its own.
     (if (= raw 0) (setq empty (1+ empty)))
     (setq grp nil)
     (foreach g groups
-      (if (and (null grp) (= (car g) gkey) (equal (cadr g) sigs))
+      (if (and (null grp)
+               (= (car g) gkey)
+               (pc:close pw (car  (cadddr g)))
+               (pc:close ph (cadr (cadddr g)))
+               (pc:listeq sigs (cadr g)))
         (setq grp g)))
     (if grp
       (setq groups (subst (list gkey sigs (cons r (caddr grp)) (cadddr grp))
@@ -1029,10 +1096,205 @@
 )
 
 
+;;; ---- why two panels did not match ------------------------------
+;;; When two panels look identical but PANELCOMP puts them in different
+;;; types, this says which piece disagreed and by how much, instead of
+;;; leaving it to be guessed at.
+
+;;; Everything one panel's fingerprint is built from, for a selection
+;;; holding exactly one panel. Returns (ext from-edges sigs) or nil.
+(defun pc:panelinfo (ss lay / split outs content o ext edg ent obj bb
+                              cx cy sigs)
+  (setq split   (pc:outlines ss lay)
+        outs    (car  split)
+        content (cadr split))
+  (if (/= (length outs) 1)
+    nil
+    (progn
+      (setq o   (car outs)
+            ext (pc:extents (car o))
+            edg (if ext t nil))
+      (if (null ext) (setq ext (cadr o)))
+      (setq sigs '())
+      (foreach ent content
+        (setq obj (vlax-ename->vla-object ent)
+              bb  (pc:bbox obj))
+        (if bb
+          (progn
+            (setq cx (/ (+ (car  (car bb)) (car  (cadr bb))) 2.0)
+                  cy (/ (+ (cadr (car bb)) (cadr (cadr bb))) 2.0))
+            (if (and (>= cx (car  (car ext))) (<= cx (car  (cadr ext)))
+                     (>= cy (cadr (car ext))) (<= cy (cadr (cadr ext))))
+              (setq sigs (cons (pc:sig ent obj bb
+                                       (car  (car ext))
+                                       (cadr (car ext)))
+                               sigs))))))
+      (list ext edg (vl-sort sigs 'pc:siglt))
+    )
+  )
+)
+
+;;; The pieces of A that no piece of B answers to.
+(defun pc:unmatched (a b / out hit)
+  (setq out '())
+  (foreach sg a
+    (setq hit nil)
+    (foreach o b (if (and (null hit) (pc:sigeq sg o)) (setq hit t)))
+    (if (null hit) (setq out (cons sg out))))
+  (reverse out)
+)
+
+;;; The piece of LST sitting closest to SG, whatever its kind.
+(defun pc:nearest (sg lst / best bd d)
+  (foreach o lst
+    (setq d (+ (abs (- (cadddr sg) (cadddr o)))
+               (abs (- (nth 4 sg) (nth 4 o)))))
+    (if (or (null best) (< d bd)) (setq best o bd d)))
+  best
+)
+
+;;; One line describing a piece: kind, size, and where it sits on the
+;;; panel.
+(defun pc:sigline (sg)
+  (strcat (car sg) "  " (pc:fmtinch (cadr sg)) " x " (pc:fmtinch (caddr sg))
+          "  at (" (pc:fmtinch (cadddr sg)) ", " (pc:fmtinch (nth 4 sg)) ")")
+)
+
+(defun c:PANELDIFF
+    (/ *error* acadobj doc space lay ss1 ss2 a b exta extb sga sgb
+       ua ub sg near i content-str ins-pt txtht)
+
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort"
+                           "console break")))
+      (princ (strcat "\n** PANELDIFF Error: " msg))
+    )
+    (princ)
+  )
+
+  (setq acadobj (vlax-get-acad-object)
+        doc     (vla-get-activedocument acadobj)
+        space   (pc:activespace doc)
+        lay     (pc:asklayer))
+
+  (princ "\nSelect the FIRST panel - outline and perforations: ")
+  (setq ss1 (ssget))
+  (princ "\nSelect the SECOND panel - outline and perforations: ")
+  (setq ss2 (ssget))
+  (if (or (null ss1) (null ss2))
+    (progn (princ "\nTwo panels are needed - command cancelled.") (exit)))
+
+  (setq a (pc:panelinfo ss1 lay)
+        b (pc:panelinfo ss2 lay))
+  (if (or (null a) (null b))
+    (progn
+      (princ (strcat "\nEach selection must hold exactly one panel"
+                     " outline on layer \"" lay "\". Select one panel at"
+                     " a time."))
+      (exit)))
+
+  (setq exta (car a) extb (car b)
+        sga  (caddr a) sgb (caddr b)
+        ua   (pc:unmatched sga sgb)
+        ub   (pc:unmatched sgb sga))
+
+  (setq content-str
+    (strcat
+      "{\\H1.25x;\\L;Why these two panels differ\\l}\\P\\P"
+      "  Tolerance      =  " (pc:fmtinch *pc:tol*) "\\P\\P"
+      "  A size         =  "
+      (pc:fmtinch (- (car  (cadr exta)) (car  (car exta)))) " x "
+      (pc:fmtinch (- (cadr (cadr exta)) (cadr (car exta))))
+      (if (cadr a) "   (from edges)" "   (from bounding box)") "\\P"
+      "  B size         =  "
+      (pc:fmtinch (- (car  (cadr extb)) (car  (car extb)))) " x "
+      (pc:fmtinch (- (cadr (cadr extb)) (cadr (car extb))))
+      (if (cadr b) "   (from edges)" "   (from bounding box)") "\\P"
+      "  A pieces       =  " (itoa (length sga)) "\\P"
+      "  B pieces       =  " (itoa (length sgb)) "\\P\\P"))
+
+  ;;; A panel measured off its edges and one measured off its bounding
+  ;;; box have their corners in different places, and every position on
+  ;;; them is then read from a different origin. That alone will split
+  ;;; two identical panels, so it is worth saying loudly.
+  (if (not (equal (cadr a) (cadr b)))
+    (setq content-str
+          (strcat content-str
+                  "  ONE PANEL WAS MEASURED OFF ITS EDGES AND THE OTHER"
+                  " OFF ITS BOUNDING BOX, so their corners are in"
+                  " different places and every hole position is read"
+                  " from a different origin. Fix that first.\\P\\P")))
+
+  (if (and (null ua) (null ub))
+    (setq content-str
+          (strcat content-str
+                  "  Every piece matches. These two panels are the same"
+                  " part - if PANELCOMP split them, the difference is in"
+                  " the panel size above."))
+    (progn
+      (setq content-str
+            (strcat content-str
+                    "{\\H1.0x;\\L;" (itoa (length ua))
+                    " piece(s) of A unaccounted for in B\\l}\\P"))
+      (setq i 0)
+      (foreach sg ua
+        (if (< i 12)
+          (progn
+            (setq near (pc:nearest sg sgb)
+                  i    (1+ i))
+            (setq content-str
+                  (strcat content-str
+                          "  " (itoa i) ". A: " (pc:sigline sg) "\\P"))
+            (if near
+              (setq content-str
+                (strcat content-str
+                  "      B: " (pc:sigline near) "\\P"
+                  "      -> "
+                  (cond
+                    ((not (= (car sg) (car near)))
+                     (strcat "different kind: " (car sg) " against "
+                             (car near)))
+                    (t
+                     (strcat "same kind, off by "
+                             (pc:fmtinch
+                               (max (abs (- (cadddr sg) (cadddr near)))
+                                    (abs (- (nth 4 sg) (nth 4 near)))))
+                             " in position, "
+                             (pc:fmtinch
+                               (max (abs (- (cadr  sg) (cadr  near)))
+                                    (abs (- (caddr sg) (caddr near)))))
+                             " in size")))
+                  "\\P"))
+              (setq content-str
+                    (strcat content-str
+                            "      -> nothing comparable in B\\P")))))
+      )
+      (if (> (length ua) 12)
+        (setq content-str
+              (strcat content-str "  ... and "
+                      (itoa (- (length ua) 12)) " more\\P")))
+      (setq content-str
+            (strcat content-str "\\P  " (itoa (length ub))
+                    " piece(s) of B unaccounted for in A."))))
+
+  (initget 1)
+  (setq ins-pt (getpoint "\nSpecify insertion point for the report: ")
+        txtht  (max (getvar "TEXTSIZE") 2.5))
+  (vla-put-height
+    (vla-addmtext space (vlax-3d-point ins-pt) 0.0 content-str) txtht)
+
+  (princ (strcat "\nA has " (itoa (length sga)) " pieces, B has "
+                 (itoa (length sgb)) "; " (itoa (length ua))
+                 " of A unmatched, " (itoa (length ub)) " of B."))
+  (princ)
+)
+
+
 (princ "\nPANELCOMP.lsp loaded.")
 (princ "\n  PANELCOMP   compare panels, colour by type, write a summary")
 (princ "\n  PANELRESET  put a selection back to colour ByLayer")
 (princ "\n  PANELCLOSE  rebuild panel outlines as closed rectangles")
+(princ "\n  PANELDIFF   say why two panels did not match")
 (princ)
 
 ;;; ============================================================ EOF

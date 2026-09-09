@@ -229,6 +229,19 @@ def load_env(ents=None, mtext_out=None, answers=None):
     env.blocks, env.sysvars = blocks, sysvars
     return env
 
+def run2(ents_a, ents_b, panel_layer=PANEL_LAYER, command='c:paneldiff'):
+    """Run a command that asks for two selections in turn."""
+    mtext_out, sels = {}, [list(ents_a), list(ents_b)]
+    env = load_env(ents_a + ents_b, mtext_out)
+    env.vars[Sym('ssget')] = lambda a: sels.pop(0) if sels else None
+    if panel_layer is not None:
+        env.vars[Sym('*pc:panel-layer*')] = panel_layer
+    try:
+        ev([Sym(command)], env); bailed = False
+    except Bail:
+        bailed = True
+    return {'text': mtext_out.get('text', ''), 'bailed': bailed}
+
 def run(ents, panel_layer=PANEL_LAYER, command='c:panelcomp', answers=None):
     """Run one command over `ents` and return what it produced.
     `answers` feeds the getkword prompts in order; None presses Enter."""
