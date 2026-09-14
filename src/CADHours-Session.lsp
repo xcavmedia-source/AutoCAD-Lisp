@@ -45,6 +45,8 @@
         *ch-cmds*         0
         *ch-last-beat*    0.0
         *ch-current*      T       ; T while this drawing is the active one
+        *ch-cur-checked*  nil     ; when *ch-current* was last verified
+        *ch-last-save*    0.0     ; debounces double-reported saves
         *ch-obj-count*    0
         *ch-prompt-due*   nil     ; a job number still has to be collected
         *ch-last-prompt*  0.0
@@ -90,19 +92,21 @@
   (strcase (strcat (ch:norm-path (ch:str p)) "\\" (ch:str n)))
 )
 
+;;; Number of open documents, 0 when it cannot be determined
+(defun ch:doc-count ( / n)
+  (setq n (vl-catch-all-apply
+            '(lambda ()
+               (vla-get-count (vla-get-documents (vlax-get-acad-object))))
+            nil))
+  (if (vl-catch-all-error-p n) 0 n)
+)
+
 (defun ch:active-doc ()
   (vla-get-activedocument (vlax-get-acad-object))
 )
 
 (defun ch:active-doc-key ()
   (ch:doc-key (ch:active-doc))
-)
-
-;;; True when this namespace's drawing is the one the user is in.
-;;; Errors resolve to T so a failure here can never stop the clock.
-(defun ch:mine-active-p ( / k)
-  (setq k (vl-catch-all-apply 'ch:active-doc-key nil))
-  (if (vl-catch-all-error-p k) T (= k *ch-doc-key*))
 )
 
 ;;; Full path of the current drawing, "" for one never saved
@@ -149,13 +153,52 @@
   (princ)
 )
 
-;;; Called by every activity handler
+;;; Am I the drawing the user is actually working in?
+;;;
+;;; This has to be asked, not remembered.  Editor and database reactors
+;;; are application-wide, so every open drawing is told about every
+;;; command - and a drawing that believes it is current when it is not
+;;; will bill the whole day's work a second time, on its own job number.
+;;; Relying on :vlr-documentBecameCurrent alone is not enough: a drawing
+;;; opened in the background never receives one, and starts life with
+;;; the flag set.
+;;;
+;;; The answer is cached for a couple of seconds so the hot path costs
+;;; one COM call every few seconds rather than one per event.  An error
+;;; keeps the previous answer rather than defaulting either way, because
+;;; guessing T over-bills and guessing nil stops the clock.
+(defun ch:current-p ( / now k)
+  (setq now (ch:now))
+  (if (or (null *ch-cur-checked*)
+          (> (abs (ch:secs *ch-cur-checked* now)) 2.0))
+    (progn
+      (setq k (vl-catch-all-apply 'ch:active-doc-key nil))
+      (if (not (vl-catch-all-error-p k))
+        (setq *ch-current* (= k *ch-doc-key*))
+      )
+      (setq *ch-cur-checked* now)
+    )
+  )
+  *ch-current*
+)
+
+;;; Force the next ch:current-p to re-ask
+(defun ch:recheck-current ()
+  (setq *ch-cur-checked* nil)
+  (princ)
+)
+
+;;; Called by every activity handler.
+;;;
+;;; A drawing that is not current still refreshes its live row, so that
+;;; a session left open in a background tab does not look abandoned to
+;;; ch:recover-live and get filed twice.
 (defun ch:touch ()
-  (cond
-    ((and *ch-active* *ch-current*) (ch:accrue))
-    ;; the drawing survived a cancelled close - reopen a segment
-    ((and (not *ch-active*) *ch-current* (/= *ch-job* ""))
-      (ch:start-session *ch-job* *ch-task* *ch-notes* *ch-mgr*))
+  (if *ch-active*
+    (if (ch:current-p)
+      (ch:accrue)
+      (ch:maybe-beat (ch:now))
+    )
   )
   (princ)
 )
@@ -332,7 +375,8 @@
         *ch-saves*       0
         *ch-cmds*        0
         *ch-obj-count*   0
-        *ch-current*     T
+        *ch-last-save*   0.0
+        *ch-cur-checked* nil      ; verified on the first activity event
         *ch-active*      T)
   (if (vl-catch-all-error-p *ch-doc-key*) (setq *ch-doc-key* ""))
   (ch:log-event "SESSION_START" (ch:str (getvar "DWGNAME")))
@@ -409,11 +453,17 @@
       (ch:start-session job task notes mgr)
     )
   )
-  (setq *ch-prompt-due* nil)
-  (ch:mru-add job)
-  (ch:job-mgr-remember job mgr)
-  (ch:mgr-remember-last mgr)
-  (if (ch:cfg-bool "RememberJobInDwg" nil) (ch:dwg-job-put job task))
+  ;; only once a real job number is on the session - an empty answer
+  ;; must not disarm the prompt or write a blank into the recent list
+  (if (/= job "")
+    (progn
+      (setq *ch-prompt-due* nil)
+      (ch:mru-add job)
+      (ch:job-mgr-remember job mgr)
+      (ch:mgr-remember-last mgr)
+      (if (ch:cfg-bool "RememberJobInDwg" nil) (ch:dwg-job-put job task))
+    )
+  )
   (princ)
 )
 
@@ -426,7 +476,7 @@
 (defun ch:on-command-start (rea args)
   (vl-catch-all-apply
     '(lambda ()
-       (if *ch-current* (setq *ch-cmds* (1+ *ch-cmds*)))
+       (if (ch:current-p) (setq *ch-cmds* (1+ *ch-cmds*)))
        (ch:touch))
     nil)
   (princ)
@@ -457,12 +507,21 @@
   (princ)
 )
 
+;;; A save.
+;;;
+;;; beginSave is registered on both the editor and the drawing reactor,
+;;; because releases differ in which one raises it.  Where both do, one
+;;; save arrives twice - so a second report within a second of the first
+;;; is ignored rather than counted.
 (defun ch:on-save (rea args)
   (vl-catch-all-apply
-    '(lambda ()
-       (if (ch:mine-active-p)
+    '(lambda ( / now)
+       (setq now (ch:now))
+       (if (and (ch:current-p)
+                (> (abs (ch:secs *ch-last-save* now)) 1.0))
          (progn
-           (setq *ch-saves* (1+ *ch-saves*))
+           (setq *ch-last-save* now
+                 *ch-saves*     (1+ *ch-saves*))
            (ch:touch)
            (ch:log-event "SAVE" (ch:str (getvar "DWGNAME")))
            (ch:write-live))))
@@ -472,56 +531,91 @@
 
 ;;; SAVEAS moves the drawing, so the recorded path and the document
 ;;; identity both have to follow it.
+;;; SAVEAS moves the drawing, so the recorded path and this namespace's
+;;; idea of its own identity both have to follow it.
+;;;
+;;; This used to be gated on "is the active document still the one I
+;;; think I am" - which is false immediately after a SAVEAS, because the
+;;; document's key has already changed.  The update was therefore skipped
+;;; exactly when it was needed, leaving the namespace holding a key that
+;;; matches nothing: the close handler then never recognised its own
+;;; drawing and the session was never committed.  Saving a new drawing
+;;; into its job folder is the commonest thing a drafter does, so this
+;;; lost whole sessions.
+;;;
+;;; The name now moves first and the key is re-derived from it.
 (defun ch:on-save-complete (rea args)
   (vl-catch-all-apply
-    '(lambda ( / new)
-       (if (ch:mine-active-p)
+    '(lambda ( / new k)
+       (setq new (ch:dwg-path))
+       (if (and (/= new "") (/= new *ch-dwg*))
          (progn
-           (setq new (ch:dwg-path))
-           (if (/= new *ch-dwg*)
-             (progn
-               (ch:log-event "PATH_CHANGED" new)
-               (setq *ch-dwg*     new
-                     *ch-doc-key* (ch:active-doc-key))))
-           (ch:write-live))))
+           (ch:log-event "PATH_CHANGED" new)
+           (setq k (vl-catch-all-apply 'ch:active-doc-key nil))
+           (setq *ch-dwg* new)
+           (if (not (vl-catch-all-error-p k)) (setq *ch-doc-key* k))
+           (ch:recheck-current)
+           (ch:write-live)
+         )
+       )
+     )
     nil)
   (princ)
 )
 
-;;; CLOSEALL and the Sheet Set Manager can close a drawing that is not
-;;; the active one, so the closing document is identified from the
-;;; callback arguments where they carry it, and only falls back to
-;;; "is the active drawing mine" when they do not.
+;;; Bank what is known without ending the session.
+(defun ch:flush-session ()
+  (if *ch-active*
+    (progn
+      (if (ch:current-p) (ch:accrue))
+      (setq *ch-last-parts* (ch:parts))
+      (ch:write-live)
+    )
+  )
+  (princ)
+)
+
+;;; A drawing closing.
+;;;
+;;; :vlr-beginClose carries no document, so there is no way to tell from
+;;; here WHICH drawing is closing - and the event reaches every open
+;;; drawing.  Ending the session on it therefore closed out whichever
+;;; drawing happened to be active, splitting the hours of a drawing the
+;;; user was still working in, while the drawing actually closing was
+;;; skipped.  It also fired on a close the user then cancelled.
+;;;
+;;; So this only flushes.  Committing is left to
+;;; :vlr-documentToBeDestroyed, which does identify the document and
+;;; only fires once the drawing really is going away.  The one case that
+;;; can be settled here is a single open drawing, where the drawing
+;;; closing must be this one.
 (defun ch:on-close (rea args)
   (vl-catch-all-apply
-    '(lambda ( / doc)
-       (setq doc (ch:arg-doc args))
-       (if (if doc (= (ch:doc-key doc) *ch-doc-key*) (ch:mine-active-p))
+    '(lambda ()
+       (ch:flush-session)
+       (if (and *ch-active* (= (ch:doc-count) 1))
          (ch:end-session "CLOSED")))
     nil)
   (princ)
 )
 
+;;; Quitting AutoCAD.  Cancellable, so again only a flush - each
+;;; document's own destroy handler commits it as it goes.
 (defun ch:on-quit (rea args)
-  (vl-catch-all-apply '(lambda () (ch:end-session "QUIT")) nil)
+  (vl-catch-all-apply 'ch:flush-session nil)
   (princ)
 )
 
-;;; Fires in every namespace whenever the user switches drawing tabs.
-;;; Leaving stops the clock at the moment of the switch; coming back
-;;; restarts it from now, so time spent in another drawing is never
-;;; billed here.
+;;; The user switched drawing tabs.  Bank what this drawing has earned
+;;; so far, then let ch:current-p re-derive who is current rather than
+;;; latching a guess.
 (defun ch:on-doc-switch (rea args)
   (vl-catch-all-apply
     '(lambda ()
-       (if (ch:mine-active-p)
-         (setq *ch-last*    (ch:now)
-               *ch-current* T)
-         (if *ch-current*
-           (progn
-             (ch:accrue)
-             (setq *ch-current* nil)
-             (ch:write-live)))))
+       (if (and *ch-active* *ch-current*) (ch:accrue))
+       (ch:recheck-current)
+       ;; coming back: do not bill the time spent in the other drawing
+       (if (ch:current-p) (setq *ch-last* (ch:now)) (ch:write-live)))
     nil)
   (princ)
 )
@@ -530,7 +624,9 @@
   (vl-catch-all-apply
     '(lambda ( / doc)
        (setq doc (ch:arg-doc args))
-       (if (or (null doc) (= (ch:doc-key doc) *ch-doc-key*))
+       (if (if doc
+             (= (ch:doc-key doc) *ch-doc-key*)
+             (<= (ch:doc-count) 1))
          (ch:end-session "CLOSED")))
     nil)
   (princ)
@@ -555,69 +651,81 @@
   (princ)
 )
 
-;;; Build one reactor, remembering it so it can be torn down again.
-;;; Event names differ slightly between AutoCAD releases, so a group
-;;; that will not construct is skipped instead of taking the rest of
-;;; the tracker down with it.
-(defun ch:add-reactor (maker events / r)
-  (setq r (vl-catch-all-apply maker (list nil events)))
+;;; Register ONE event on its own reactor.
+;;;
+;;; Event names differ between releases, and a reactor refuses to
+;;; construct if any name in its list is unknown.  Grouping events
+;;; therefore meant one unsupported name silently removed every handler
+;;; beside it - losing close handling, for instance, with no trace
+;;; outside a debug line.  One event per reactor keeps a failure to
+;;; itself, and the failure is now reported rather than whispered.
+(defun ch:add-event (maker event callback / r)
+  (setq r (vl-catch-all-apply maker (list nil (list (cons event callback)))))
   (if (vl-catch-all-error-p r)
-    (progn (ch:dbg (strcat "reactor group skipped: "
-                           (vl-catch-all-error-message r)))
-           nil)
+    (progn
+      (setq *ch-reactor-fails*
+            (cons (vl-princ-to-string event) *ch-reactor-fails*))
+      nil
+    )
     (progn (setq *ch-reactors* (cons r *ch-reactors*)) r)
   )
 )
 
-(defun ch:install-reactors ()
+(defun ch:install-reactors ( / ed)
   (ch:remove-reactors)
+  (setq *ch-reactor-fails* nil
+        ed                 'vlr-editor-reactor)
 
   ;; commands - the main activity signal
-  (ch:add-reactor 'vlr-editor-reactor
-    '((:vlr-commandWillStart . ch:on-command-start)
-      (:vlr-commandEnded     . ch:on-command-end)
-      (:vlr-commandCancelled . ch:on-command-end)
-      (:vlr-commandFailed    . ch:on-command-end)))
+  (ch:add-event ed :vlr-commandWillStart 'ch:on-command-start)
+  (ch:add-event ed :vlr-commandEnded     'ch:on-command-end)
+  (ch:add-event ed :vlr-commandCancelled 'ch:on-command-end)
+  (ch:add-event ed :vlr-commandFailed    'ch:on-command-end)
 
   ;; save / close / quit
-  (ch:add-reactor 'vlr-editor-reactor
-    '((:vlr-beginSave    . ch:on-save)
-      (:vlr-saveComplete . ch:on-save-complete)
-      (:vlr-beginClose   . ch:on-close)
-      (:vlr-beginQuit    . ch:on-quit)))
+  (ch:add-event ed :vlr-beginSave    'ch:on-save)
+  (ch:add-event ed :vlr-saveComplete 'ch:on-save-complete)
+  (ch:add-event ed :vlr-beginClose   'ch:on-close)
+  (ch:add-event ed :vlr-beginQuit    'ch:on-quit)
 
-  ;; the same events off the drawing reactor, for releases where the
-  ;; editor reactor does not raise them
-  (ch:add-reactor 'vlr-dwg-reactor
-    '((:vlr-beginSave  . ch:on-save)
-      (:vlr-beginClose . ch:on-close)))
+  ;; the same two off the drawing reactor, for releases where the editor
+  ;; reactor does not raise them.  ch:on-save debounces the duplicate.
+  (ch:add-event 'vlr-dwg-reactor :vlr-beginSave  'ch:on-save)
+  (ch:add-event 'vlr-dwg-reactor :vlr-beginClose 'ch:on-close)
 
-  ;; grip edits and Properties-palette changes raise no command, so
-  ;; the database reactor is what catches them
+  ;; grip edits and Properties-palette changes raise no command, so the
+  ;; database reactor is what catches them
   (if (ch:cfg-bool "TrackObjectEdits" T)
-    (ch:add-reactor 'vlr-acdb-reactor
-      '((:vlr-objectModified . ch:on-object)
-        (:vlr-objectAppended . ch:on-object)
-        (:vlr-objectErased   . ch:on-object)))
+    (progn
+      (ch:add-event 'vlr-acdb-reactor :vlr-objectModified 'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor :vlr-objectAppended 'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor :vlr-objectErased   'ch:on-object)
+    )
   )
 
   ;; double-click editing
-  (ch:add-reactor 'vlr-mouse-reactor
-    '((:vlr-beginDoubleClick . ch:on-activity)))
+  (ch:add-event 'vlr-mouse-reactor :vlr-beginDoubleClick 'ch:on-activity)
 
   ;; optional, off by default: some sysvars change without the user
   ;; doing anything, which would keep the clock running while idle
   (if (ch:cfg-bool "TrackSysVarChanges" nil)
-    (ch:add-reactor 'vlr-sysvar-reactor
-      '((:vlr-sysVarChanged . ch:on-activity)))
+    (ch:add-event 'vlr-sysvar-reactor :vlr-sysVarChanged 'ch:on-activity)
   )
 
-  ;; drawing-tab switches
-  (ch:add-reactor 'vlr-docmanager-reactor
-    '((:vlr-documentBecameCurrent . ch:on-doc-switch)
-      (:vlr-documentToBeDestroyed . ch:on-doc-destroy)))
+  ;; drawing-tab switches, and the authoritative end-of-drawing event
+  (ch:add-event 'vlr-docmanager-reactor
+                :vlr-documentBecameCurrent 'ch:on-doc-switch)
+  (ch:add-event 'vlr-docmanager-reactor
+                :vlr-documentToBeDestroyed 'ch:on-doc-destroy)
 
-  (ch:dbg (strcat (itoa (length *ch-reactors*)) " reactor group(s) active"))
+  (ch:dbg (strcat (itoa (length *ch-reactors*)) " reactor(s) active"))
+  (if *ch-reactor-fails*
+    (progn
+      (ch:say (strcat "these events are not available on this release: "
+                      (ch:join (reverse *ch-reactor-fails*) " ")))
+      (ch:say "time will still be tracked, but tell whoever maintains the tracker.")
+    )
+  )
   (princ)
 )
 
@@ -713,7 +821,7 @@
 )
 
 
-(ch:module "Session" "1.1.0")
+(ch:module "Session" "1.2.0")
 
 (princ)
 ;;; ============================================================ EOF

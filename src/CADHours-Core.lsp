@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.1.0")
+(setq *ch-version* "1.2.0")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -678,7 +678,7 @@
     (cons "HeartbeatSeconds"   "60")
     (cons "MinSessionSeconds"  "10")
     (cons "PromptOnOpen"       "1")
-    (cons "PromptOnUnsaved"    "1")
+    (cons "PromptOnUnsaved"    "0")
     (cons "RequireJobNumber"   "1")
     (cons "RepromptSeconds"    "120")
     (cons "JobPattern"         "*")
@@ -1012,7 +1012,7 @@
 )
 
 
-(ch:module "Core" "1.1.0")
+(ch:module "Core" "1.2.0")
 
 (princ)
 ;;; ============================================================ EOF

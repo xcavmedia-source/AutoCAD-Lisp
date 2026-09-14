@@ -658,7 +658,10 @@
     (setq guess (list *ch-job* *ch-task* "the running session"))
   )
   (setq mgr (ch:suggest-manager (car guess)))
-  (setq *ch-last-prompt* (ch:now))
+  ;; the flag is cleared here as well as after the dialog, because an
+  ;; error inside start_dialog's action expressions would otherwise
+  ;; leave it latched and silence the reminder for good
+  (setq *ch-in-dialog* nil)
 
   ;; UseDialog = 0 skips the pop-up entirely.  Otherwise try the dialog
   ;; and drop to the prompt if it could not be put on screen.
@@ -674,6 +677,12 @@
            allow-cli)
     (setq res (ch:job-cli (car guess) mgr))
   )
+  ;; stamped on the way OUT, not on the way in.  Stamping it before the
+  ;; dialog meant a pop-up left on screen longer than RepromptSeconds
+  ;; had already used up its own quiet period, so pressing Skip brought
+  ;; it straight back on the next command.
+  (setq *ch-last-prompt* (ch:now))
+
   (cond
     (res
       (ch:set-job (car res) (cadr res) (caddr res) (cadddr res))
@@ -696,25 +705,39 @@
   )
 )
 
-;;; Called after every command ends.  Nags for a job number, but only
-;;; while a session is genuinely running in the drawing the user is
-;;; looking at, and only every RepromptSeconds, so it can never become
-;;; a pop-up that follows them around.
-(defun ch:maybe-reprompt ()
+;;; Called after every command ends.
+;;;
+;;; This runs inside a reactor callback, and a modal DCL dialog must not
+;;; be raised from one: reactors keep firing while the dialog is up, the
+;;; state is unsupported, and it is what produced a pop-up that appeared
+;;; but would not accept input.  It also fired on things the user would
+;;; never call an action - pressing Escape, a pan, a plot, a script
+;;; line, or one of the tracker's own report commands.
+;;;
+;;; So nothing is opened here.  The user is reminded on the command
+;;; line, at most once every RepromptSeconds, and types CHJOB when it
+;;; suits them.  Time is still being recorded as UNASSIGNED meanwhile,
+;;; so nothing is lost by them finishing what they were doing first.
+(defun ch:maybe-reprompt ( / wait)
+  (setq wait (float (max 30 (ch:cfg-int "RepromptSeconds" 120))))
   (if (and *ch-prompt-due*
            *ch-active*
            (not *ch-in-dialog*)
-           *ch-current*
            (ch:cfg-bool "RequireJobNumber" T)
-           (> (ch:secs *ch-last-prompt* (ch:now))
-              (float (ch:cfg-int "RepromptSeconds" 120))))
-    (ch:safe 'ch:ask-job (list nil))
+           (ch:current-p)
+           (> (ch:secs *ch-last-prompt* (ch:now)) wait))
+    (progn
+      (setq *ch-last-prompt* (ch:now))
+      (princ (strcat "\n[CADHours] This drawing's time is still UNASSIGNED"
+                     " - type CHJOB to put it on a job."))
+      (princ)
+    )
   )
   (princ)
 )
 
 
-(ch:module "Job" "1.1.0")
+(ch:module "Job" "1.2.0")
 
 (princ)
 ;;; ============================================================ EOF

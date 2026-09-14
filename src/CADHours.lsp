@@ -129,7 +129,7 @@
 
 ;;; Everything that happens when a drawing is ready to be worked in.
 ;;; Runs once per drawing, from S::STARTUP.
-(defun ch:on-doc-load ( / k)
+(defun ch:on-doc-load (allow-cli / k)
   (if *ch-started*
     nil
     (progn
@@ -158,7 +158,7 @@
       (if (and (ch:cfg-bool "PromptOnOpen" T)
                (or (ch:cfg-bool "PromptOnUnsaved" T)
                    (/= (getvar "DWGTITLED") 0)))
-        (ch:begin-with-prompt)
+        (ch:begin-with-prompt allow-cli)
         (ch:begin-silently)
       )
       (ch:install-reactors)
@@ -170,8 +170,8 @@
 ;;; Ask for the job number, then start the clock.  Dismissing the
 ;;; dialog still starts a session - the time is banked as UNASSIGNED
 ;;; and CHJOB moves it onto a real job later.
-(defun ch:begin-with-prompt ()
-  (if (not (ch:safe 'ch:ask-job (list T)))
+(defun ch:begin-with-prompt (allow-cli)
+  (if (not (ch:safe 'ch:ask-job (list allow-cli)))
     (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
   )
   (princ)
@@ -200,7 +200,8 @@
        (if *ch-boot-guard*
          (progn
            (setq *ch-boot-guard* nil)
-           (if (not *ch-started*) (ch:on-doc-load))
+           ;; inside a reactor - the command line is not ours to use
+           (if (not *ch-started*) (ch:on-doc-load nil))
          )
        ))
     nil)
@@ -224,14 +225,14 @@
     )
     (princ)
   )
-  (if (not *ch-started*) (ch:on-doc-load) (ch:ask-job T))
+  (if (not *ch-started*) (ch:on-doc-load T) (ch:ask-job T))
   (princ)
 )
 
 (defun c:CHSTART ()
   (cond
     (*ch-active* (ch:say "Already tracking - CHSTATUS shows the detail."))
-    ((not *ch-started*) (ch:on-doc-load))
+    ((not *ch-started*) (ch:on-doc-load T))
     (T (ch:ask-job T))
   )
   (princ)
@@ -421,7 +422,7 @@
         (setq *ch-prev-startup* s::startup)
         (defun s::startup ()
           (if *ch-prev-startup* (vl-catch-all-apply *ch-prev-startup* nil))
-          (vl-catch-all-apply 'ch:on-doc-load nil)
+          (vl-catch-all-apply 'ch:on-doc-load (list T))
           (princ)
         )
         (setq *ch-startup-hooked* T)
