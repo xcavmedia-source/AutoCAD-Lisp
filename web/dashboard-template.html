@@ -80,6 +80,12 @@
   .pill.run { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
   .muted { color: var(--muted); }
   .empty { color: var(--muted); padding: 24px 0; text-align: center; }
+  .notice { max-width: 46rem; }
+  .notice h2 { color: var(--ink); font-size: 16px; text-transform: none; letter-spacing: 0; }
+  .notice p { margin: 0 0 10px; }
+  .notice code { background: var(--bg); border: 1px solid var(--line);
+                 border-radius: 5px; padding: 1px 5px; font-size: 13px; }
+  .notice .cmd { font-weight: 600; color: var(--accent); }
   .rowline { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
   @media print {
     body { padding: 0; background: #fff; }
@@ -170,6 +176,42 @@
 (function () {
   "use strict";
 
+  /* ---- is there anything to show? -------------------------------------
+     This file is a template.  CHDASH copies it and injects the session
+     data where the marker is, so a bare template has no CADHOURS at all.
+     Opening the template directly is an easy mistake to make, and a
+     silent blank page is a poor way to explain it. */
+
+  function notice(heading, html) {
+    document.body.innerHTML =
+      '<header><h1>CAD Hours</h1></header>' +
+      '<div class="panel notice"><h2>' + heading + '</h2>' + html + '</div>';
+  }
+
+  if (typeof CADHOURS === "undefined" || !CADHOURS || !CADHOURS.columns) {
+    notice("This is the template, not a dashboard", [
+      "<p>No data has been put into this page, which means it is the file",
+      "<code>dashboard-template.html</code> rather than a generated report.</p>",
+      "<p>To build a real dashboard, type <span class=\"cmd\">CHDASH</span> in",
+      "AutoCAD. It writes a finished page into the <code>reports</code> folder",
+      "beside your logged hours and opens it for you.</p>",
+      "<p>Leave this template where it is &mdash; <span class=\"cmd\">CHDASH</span>",
+      "needs it in order to build the page.</p>"
+    ].join(" "));
+    return;
+  }
+
+  if (!CADHOURS.rows || !CADHOURS.rows.length) {
+    notice("No sessions in this snapshot", [
+      "<p>This dashboard was generated for",
+      "<code>" + (CADHOURS.from || "?") + "</code> to",
+      "<code>" + (CADHOURS.to || "?") + "</code> and found no sessions.</p>",
+      "<p>Run <span class=\"cmd\">CHDASH</span> again and enter",
+      "<code>ALL</code> for the period to see everything recorded so far.</p>"
+    ].join(" "));
+    return;
+  }
+
   var COLS = CADHOURS.columns;
   var ROWS = CADHOURS.rows.map(function (r) {
     var o = {};
@@ -210,10 +252,11 @@
   fillSelect($("fuser"), uniq("user"), "Everyone");
   fillSelect($("fjob"),  uniq("job"),  "All jobs");
 
-  $("meta").textContent =
-    CADHOURS.from + " to " + CADHOURS.to +
-    "  ·  " + ROWS.length + " sessions  ·  generated " + CADHOURS.generated +
-    "  ·  " + CADHOURS.root;
+  $("meta").innerHTML =
+    esc(CADHOURS.from) + " to " + esc(CADHOURS.to) +
+    "  ·  " + ROWS.length + " sessions  ·  " +
+    "<strong>snapshot taken " + esc(CADHOURS.generated) + "</strong>" +
+    " &mdash; run CHDASH again to refresh  ·  " + esc(CADHOURS.root);
 
   /* ---- filtering ---- */
 

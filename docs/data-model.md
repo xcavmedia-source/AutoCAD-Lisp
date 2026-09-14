@@ -118,6 +118,20 @@ task, over any period, and can write the summary out as a CSV.
 search, filter by user / job / date, pivot by any of nine groupings, and
 download either the summary or the raw sessions. No web server, no internet.
 
+The page is a snapshot taken when the command runs, not a live feed — the rows
+are embedded in the file itself, which is exactly why it works from a share
+with nothing installed and can be emailed to someone who has no AutoCAD. The
+header states when it was taken. Run `CHDASH` again to refresh it; it
+overwrites the same file every time:
+
+```
+<LogRoot>\reports\CADHours-Dashboard.html
+```
+
+If you want it refreshed on a schedule without anyone typing the command, that
+is a job for Windows Task Scheduler running AutoCAD with a script — worth doing
+only once the numbers are being relied on daily.
+
 **In Excel** — open any `sessions\*.csv`, or point Power Query at
 `<LogRoot>\sessions` with "combine files" to get every month in one table.
 `active_hours` is already decimal so it pivots straight away.

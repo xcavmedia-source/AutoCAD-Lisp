@@ -129,11 +129,16 @@
 
 ;;; ---- build ----------------------------------------------------------------
 
-;;; Render the dashboard for ROWS and return the file path
+;;; Render the dashboard for ROWS and return the file path.
+;;;
+;;; Always the same file name, so a desktop shortcut or a link sent to
+;;; a project manager keeps working.  Each run overwrites it with a
+;;; fresh snapshot rather than leaving a trail of dated files nobody
+;;; can tell apart.
 (defun ch:build-dashboard (rows from to tag / tpl out f lines wrote ln)
   (setq tpl   (ch:template-file)
         out   (ch:path+ (ch:reports-dir (ch:root))
-                        (strcat "CADHours-Dashboard-" (ch:safe-name tag) ".html"))
+                        "CADHours-Dashboard.html")
         lines (if tpl (ch:read-lines tpl) (ch:fallback-html))
         wrote nil)
   (ch:mkpath (ch:reports-dir (ch:root)))
@@ -200,7 +205,14 @@
   (setq rows (ch:filter (ch:load-rows (car rng) (cadr rng))
                         (list (cons "user" user) (cons "job" job))))
   (if (null rows)
-    (ch:say "Nothing matched that filter - no dashboard written.")
+    (progn
+      (ch:say (strcat "No sessions found between " (car rng) " and " (cadr rng)
+                      "  (user=" user "  job=" job ")."))
+      (ch:say (strcat "Looked in: " (ch:path+ (ch:root) "sessions")))
+      (ch:say "Nothing written.  Try CHDASH again with period ALL, or CHSTATUS")
+      (ch:say "to check this drawing is being tracked.  A session is only filed")
+      (ch:say "once the drawing is closed, or CHSTOP is typed.")
+    )
     (progn
       (setq file (ch:build-dashboard rows (car rng) (cadr rng)
                                      (strcat (car rng) "_" (cadr rng))))

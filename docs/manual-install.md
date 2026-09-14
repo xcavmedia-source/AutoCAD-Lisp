@@ -235,6 +235,13 @@ Close AutoCAD completely and reopen it, then open any drawing.
 3. Draw a couple of lines, then type `CHSTATUS`. `State` should say `running`
    and `Billed` should be counting up.
 4. Close the drawing, then type `CHTODAY`. Your session should be listed.
+   A session is only filed into the database when the drawing closes (or on
+   `CHSTOP`), so this is the step that proves the whole round trip.
+5. Type `CHDASH` and press Enter three times to accept the defaults. The
+   browser should open on a page with your session in it. That page is a
+   snapshot, written to
+   `F:\0000-Drafting\22-CADHoursData\reports\CADHours-Dashboard.html` —
+   re-run `CHDASH` whenever you want it refreshed.
 
 Then check the server: a file has appeared under
 

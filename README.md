@@ -86,6 +86,18 @@ prompts: **[docs/deployment.md](docs/deployment.md)**.
 filters, nine pivot groupings, CSV download — that opens in any browser with
 nothing installed. Hand it to a project manager who does not have AutoCAD.
 
+It is a **snapshot, not a live view.** The hours are baked into the page when
+you run the command, so reloading it in the browser shows the same numbers;
+run `CHDASH` again to refresh. It always writes to the same path, so a desktop
+shortcut or a link keeps working:
+
+```
+<LogRoot>\reports\CADHours-Dashboard.html
+```
+
+(`web\dashboard-template.html` is the blank template `CHDASH` builds from —
+opening that one directly shows a page telling you so.)
+
 ---
 
 ## How the timing works
