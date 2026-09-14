@@ -199,8 +199,32 @@
 
 ;;; ---- the dialog --------------------------------------------------------
 
+;;; ---- guarded tile access ------------------------------------------------
+;;;
+;;; get_tile and set_tile raise an error when handed a key the loaded
+;;; dialog does not contain, and an error thrown inside an action
+;;; expression leaves the dialog on screen but unresponsive - the OK
+;;; button appears to do nothing.  Everything below goes through these
+;;; so a tile mismatch degrades to an empty value instead.
+
+(defun ch:tile-get (key / v)
+  (setq v (vl-catch-all-apply 'get_tile (list key)))
+  (if (vl-catch-all-error-p v) "" (ch:str v))
+)
+
+(defun ch:tile-set (key val)
+  (vl-catch-all-apply 'set_tile (list key (ch:str val)))
+  (princ)
+)
+
+(defun ch:tile-mode (key mode)
+  (vl-catch-all-apply 'mode_tile (list key mode))
+  (princ)
+)
+
+
 (defun ch:note-lines ()
-  (max 1 (min 8 (ch:cfg-int "NoteLines" 4)))
+  (max 1 (min 8 (ch:cfg-int "NoteLines" 3)))
 )
 
 (defun ch:note-width () 200)
@@ -260,21 +284,19 @@
     (list
       "cadhours_job : dialog {"
       "  label = \"CAD Hours Tracker\";"
-      "  : boxed_column {"
-      "    label = \"Drawing\";"
-      "    : text { key = \"dwgname\"; width = 64; }"
-      "    : text { key = \"dwgpath\"; width = 64; }"
-      "  }"
+      "  : text { key = \"dwgname\"; width = 64; }"
+      "  : text { key = \"dwgpath\"; width = 64; }"
+      "  : spacer { height = 0.2; }"
       "  : boxed_column {"
       "    label = \"Charge this time to\";"
-      "    : edit_box   { key = \"job\";     label = \"&Job number:\";      edit_width = 26; edit_limit = 64; }"
+      "    : edit_box   { key = \"job\";     label = \"&Job number:\";      edit_width = 26; edit_limit = 64; allow_accept = true; }"
       "    : popup_list { key = \"recent\";  label = \"&Recent jobs:\";     edit_width = 26; }"
       "    : popup_list { key = \"manager\"; label = \"Project &manager:\"; edit_width = 26; }"
       "    : edit_box   { key = \"task\";    label = \"&Task / phase:\";    edit_width = 26; edit_limit = 64; }"
       "    : text { key = \"hint\"; width = 64; }"
       "  }"
       "  : boxed_column {"
-      "    label = \"&Notes (optional)\";"
+      "    label = \"Notes (optional)\";"
     ))
   (setq i 0)
   (repeat (ch:note-lines)
@@ -301,7 +323,7 @@
 ;;; the note-line count changes.
 (defun ch:dcl-file ( / path f ln)
   (if (and *ch-dcl-path* (findfile *ch-dcl-path*)
-           (= *ch-dcl-lines* (ch:note-lines)))
+           (equal *ch-dcl-lines* (ch:note-lines)))
     *ch-dcl-path*
     (progn
       (setq path (vl-filename-mktemp "cadhours" nil ".dcl"))
@@ -311,6 +333,8 @@
           (close f)
           (setq *ch-dcl-lines* (ch:note-lines))
           (setq *ch-dcl-path* path)
+          (ch:dbg (strcat "dialog definition written to " path))
+          *ch-dcl-path*
         )
       )
     )
@@ -321,7 +345,7 @@
 (defun ch:read-notes ( / i out v)
   (setq i 0 out '())
   (repeat (ch:note-lines)
-    (setq v (ch:trim (get_tile (strcat "n" (itoa i)))))
+    (setq v (ch:trim (ch:tile-get (strcat "n" (itoa i)))))
     (if (/= v "") (setq out (cons v out)))
     (setq i (1+ i))
   )
@@ -330,25 +354,25 @@
 
 ;;; The manager the dropdown is currently showing, "" for "(none)"
 (defun ch:read-manager ( / i)
-  (setq i (atoi (ch:str (get_tile "manager"))))
+  (setq i (atoi (ch:tile-get "manager")))
   (if (and (> i 0) *ch-mgr-list*) (nth i *ch-mgr-list*) "")
 )
 
 ;;; OK button.  Validates before it lets the dialog close.
 (defun ch:dlg-accept ( / j m)
-  (setq j (ch:trim (get_tile "job"))
+  (setq j (ch:trim (ch:tile-get "job"))
         m (ch:read-manager))
   (cond
     ((and (= j "") (ch:cfg-bool "RequireJobNumber" T))
-      (set_tile "error" "A job number is required for time tracking."))
+      (ch:tile-set "error" "A job number is required for time tracking."))
     ((and (/= j "") (not (ch:valid-job j)))
-      (set_tile "error"
+      (ch:tile-set "error"
         (strcat "\"" j "\" is not a valid job number.  " (ch:job-hint))))
     ((and (= m "") (ch:cfg-bool "RequireManager" nil))
-      (set_tile "error" "Please choose the project manager for this job."))
+      (ch:tile-set "error" "Please choose the project manager for this job."))
     (T
       (setq *ch-dlg-job*   j
-            *ch-dlg-task*  (ch:trim (get_tile "task"))
+            *ch-dlg-task*  (ch:trim (ch:tile-get "task"))
             *ch-dlg-mgr*   m
             *ch-dlg-notes* (ch:read-notes))
       (done_dialog 1)
@@ -380,11 +404,11 @@
         (progn
           (setq *ch-dlg-shown* T
                 *ch-in-dialog* T)
-          (set_tile "dwgname" (strcat "  " (ch:str (getvar "DWGNAME"))))
-          (set_tile "dwgpath" (strcat "  " (ch:str (ch:dwg-path))))
-          (set_tile "job"     (ch:str job))
-          (set_tile "task"    (ch:str task))
-          (set_tile "hint"    (strcat "  " hint))
+          (ch:tile-set "dwgname" (strcat "  " (ch:str (getvar "DWGNAME"))))
+          (ch:tile-set "dwgpath" (strcat "  " (ch:str (ch:dwg-path))))
+          (ch:tile-set "job"  job)
+          (ch:tile-set "task" task)
+          (ch:tile-set "hint" (strcat "  " hint))
 
           (start_list "recent")
           (if rec (mapcar 'add_list rec) (add_list "(none yet)"))
@@ -397,21 +421,21 @@
           (if mgrs (mapcar 'add_list mgrs))
           (end_list)
           (setq i (ch:index-of mgr *ch-mgr-list*))
-          (set_tile "manager" (itoa (if i i 0)))
+          (ch:tile-set "manager" (itoa (if i i 0)))
 
           ;; the note, spread across the boxes
           (setq lines (ch:wrap-note notes (ch:note-lines) (ch:note-width))
                 i     0)
           (repeat (ch:note-lines)
-            (set_tile (strcat "n" (itoa i)) (ch:str (nth i lines)))
+            (ch:tile-set (strcat "n" (itoa i)) (nth i lines))
             (setq i (1+ i))
           )
 
           (action_tile "recent"
-            "(if rec (set_tile \"job\" (nth (atoi $value) rec)))")
+            "(if rec (ch:tile-set \"job\" (nth (atoi $value) rec)))")
           (action_tile "accept" "(ch:dlg-accept)")
           (action_tile "cancel" "(done_dialog 0)")
-          (mode_tile "job" 2)                    ; put the caret in the job box
+          (ch:tile-mode "job" 2)                    ; put the caret in the job box
 
           (setq rc (start_dialog))
           (setq *ch-in-dialog* nil)
@@ -438,19 +462,68 @@
   hit
 )
 
-;;; Command-line fallback, for the rare case where the dialog cannot
-;;; be shown.  Never called from a reactor.
-(defun ch:job-getstring (job mgr / s)
-  (setq s (getstring T
-            (strcat "\nJob number for this drawing"
-                    (if (/= job "") (strcat " <" job ">") "")
-                    (if (/= (ch:job-hint) "") (strcat "  [" (ch:job-hint) "]") "")
-                    ": ")))
-  (setq s (ch:trim s))
-  (if (= s "") (setq s job))
-  (if (ch:valid-job s) (list s "" "" (ch:str mgr)) nil)
+;;; ---- command-line prompt ------------------------------------------------
+;;;
+;;; Used when the dialog cannot be shown, and selectable outright with
+;;; UseDialog = 0.  It asks for everything the dialog does, so turning
+;;; the dialog off is a real alternative rather than a degraded one.
+;;;
+;;; Never called from a reactor: getstring would interfere with whatever
+;;; the user is in the middle of.
+
+(defun ch:pick-manager (mgr / mgrs i pick n)
+  (setq mgrs (ch:managers))
+  (cond
+    ((null mgrs) (ch:str mgr))
+    (T
+      (princ "\n  Project managers:")
+      (setq i 1)
+      (foreach n mgrs
+        (princ (strcat "\n    " (itoa i) " = " n))
+        (setq i (1+ i))
+      )
+      (setq pick (ch:trim
+                   (getstring (strcat "\n  Number"
+                                      (if (/= (ch:str mgr) "")
+                                        (strcat " <" mgr ">")
+                                        " <none>")
+                                      ": "))))
+      (cond
+        ((= pick "") (ch:str mgr))
+        ((and (> (atoi pick) 0) (<= (atoi pick) (length mgrs)))
+          (nth (1- (atoi pick)) mgrs))
+        ;; a typed name is accepted if it is on the list
+        ((ch:known-manager pick))
+        (T (ch:say "Not on the list - left unset.") "")
+      )
+    )
+  )
 )
 
+;;; Returns (job task notes manager) or nil
+(defun ch:job-cli (job mgr / j task notes m)
+  (princ "\n")
+  (setq j (ch:trim (getstring T
+            (strcat "\nJob number"
+                    (if (/= (ch:str job) "") (strcat " <" job ">") "")
+                    (if (/= (ch:job-hint) "") (strcat "  [" (ch:job-hint) "]") "")
+                    ": "))))
+  (if (= j "") (setq j (ch:str job)))
+  (cond
+    ((not (ch:valid-job j))
+      (ch:say (strcat "\"" j "\" is not a valid job number.  " (ch:job-hint)))
+      nil)
+    (T
+      (setq m     (ch:pick-manager mgr)
+            task  (ch:trim (getstring T "\n  Task / phase <none>: "))
+            notes (ch:trim (getstring T "\n  Notes <none>: ")))
+      (if (and (= m "") (ch:cfg-bool "RequireManager" nil))
+        (progn (ch:say "A project manager is required.") nil)
+        (list j task notes m)
+      )
+    )
+  )
+)
 
 ;;; ---- asking, and acting on the answer ----------------------------------
 
@@ -466,13 +539,20 @@
   )
   (setq mgr (ch:suggest-manager (car guess)))
   (setq *ch-last-prompt* (ch:now))
-  (setq res (ch:job-dialog (car guess) (cadr guess) *ch-notes* mgr
-                           (if (= (caddr guess) "")
-                             ""
-                             (strcat "Suggested job comes from " (caddr guess) "."))))
-  ;; the dialog could not be shown at all - fall back to the prompt
-  (if (and (null res) (null *ch-dlg-shown*) allow-cli)
-    (setq res (ch:job-getstring (car guess) mgr))
+
+  ;; UseDialog = 0 skips the pop-up entirely.  Otherwise try the dialog
+  ;; and drop to the prompt if it could not be put on screen.
+  (if (ch:cfg-bool "UseDialog" T)
+    (setq res (ch:job-dialog (car guess) (cadr guess) *ch-notes* mgr
+                             (if (= (caddr guess) "")
+                               ""
+                               (strcat "Suggested job comes from "
+                                       (caddr guess) "."))))
+  )
+  (if (and (null res)
+           (or (null *ch-dlg-shown*) (not (ch:cfg-bool "UseDialog" T)))
+           allow-cli)
+    (setq res (ch:job-cli (car guess) mgr))
   )
   (cond
     (res

@@ -20,6 +20,7 @@
 ;;;   CHDASHALL   refresh it with every session, no prompts
 ;;;   CHRECOVER   re-file sessions left behind by a crash
 ;;;   CHCONFIG    show the active settings
+;;;   CHDLG       test the pop-up on its own
 ;;;   CADHOURS    command summary
 ;;;
 ;;; Requirements : AutoCAD 2019+ full, or AutoCAD LT 2024+
@@ -292,6 +293,58 @@
   (princ)
 )
 
+;;; Show the pop-up on its own and report exactly what came back,
+;;; without starting, stopping or changing any session.  This is the
+;;; command to run when the dialog itself is misbehaving.
+(defun c:CHDLG ( / *error* res mgrs)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
+  (ch:cfg-load)
+  (ch:hdr "CAD Hours - dialog test")
+  (setq mgrs (ch:managers))
+  (princ (strcat "\n  Manager file : "
+                 (if (ch:manager-file) (ch:manager-file) "(not found)")))
+  (princ (strcat "\n  Names loaded : " (itoa (length mgrs))
+                 (if mgrs (strcat "  -> " (ch:join mgrs ", ")) "")))
+  (princ (strcat "\n  Note lines   : " (itoa (ch:note-lines))))
+  (princ (strcat "\n  UseDialog    : " (if (ch:cfg-bool "UseDialog" T) "1" "0")))
+  (princ "\n\n  Opening the pop-up.  Fill it in and press OK, or press Skip.")
+
+  (setq res (ch:job-dialog "" "" "" "" "dialog test - nothing will be recorded"))
+
+  (princ (strcat "\n\n  Dialog displayed : " (if *ch-dlg-shown* "yes" "NO")))
+  (princ (strcat "\n  DCL file         : "
+                 (if *ch-dcl-path* *ch-dcl-path* "(none written)")))
+  (if res
+    (progn
+      (princ "\n  Returned         : OK")
+      (princ (strcat "\n    job     : \"" (ch:str (car res))    "\""))
+      (princ (strcat "\n    task    : \"" (ch:str (cadr res))   "\""))
+      (princ (strcat "\n    notes   : \"" (ch:str (caddr res))  "\""))
+      (princ (strcat "\n    manager : \"" (ch:str (cadddr res)) "\""))
+      (princ (strcat "\n    note length: " (itoa (strlen (ch:str (caddr res))))
+                     " characters"))
+    )
+    (princ (strcat "\n  Returned         : "
+                   (if *ch-dlg-shown*
+                     "nothing - Skip was pressed, or OK was blocked by validation"
+                     "nothing - the dialog could not be displayed at all")))
+  )
+  (if (and (null *ch-dlg-shown*) *ch-dcl-path*)
+    (progn
+      (princ "\n\n  The dialog would not display.  Open the DCL file above in")
+      (princ "\n  Notepad - that is exactly what AutoCAD was handed.")
+    )
+  )
+  (princ "\n")
+  (princ)
+)
+
+
 (defun c:CADHOURS ()
   (ch:hdr (strcat "CAD Hours Tracker " *ch-version*))
   (princ "\n  CHJOB       set or change the job number for this drawing")
@@ -309,6 +362,7 @@
   (princ "\n")
   (princ "\n  CHRECOVER   re-file sessions left behind by a crash")
   (princ "\n  CHCONFIG    show the active settings")
+  (princ "\n  CHDLG       test the pop-up on its own and report what it returns")
   (princ "\n")
   (princ)
 )
