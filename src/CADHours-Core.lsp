@@ -676,6 +676,24 @@
   hit
 )
 
+;;; Strip a trailing " ; comment" from a setting's value.
+;;;
+;;; Only a semicolon that follows whitespace counts, so a value may
+;;; still contain one.  Without this, "LogRoot = F:\Data   ; the share"
+;;; would be read as a folder name with the comment stuck on the end.
+(defun ch:strip-comment (v / i n c cut)
+  (setq n (strlen v) i 2)
+  (while (and (null cut) (<= i n))
+    (setq c (substr v i 1))
+    (if (and (= c ";")
+             (member (substr v (1- i) 1) '(" " "\t")))
+      (setq cut (1- i))
+    )
+    (setq i (1+ i))
+  )
+  (ch:trim (if cut (substr v 1 cut) v))
+)
+
 ;;; Parse the INI file into an association list.  Blank lines and
 ;;; lines starting with ; or # are ignored; everything else is
 ;;; Key=Value.  Section headers are ignored - keys are global.
@@ -693,7 +711,7 @@
                  (setq pos (vl-string-search "=" ln)))
           (progn
             (setq k (ch:trim (substr ln 1 pos))
-                  v (ch:trim (substr ln (+ pos 2))))
+                  v (ch:strip-comment (ch:trim (substr ln (+ pos 2)))))
             (setq alist (cons (cons k v)
                               (vl-remove-if
                                 '(lambda (p) (= (strcase (car p)) (strcase k)))

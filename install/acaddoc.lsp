@@ -20,33 +20,62 @@
 ;;; that if it loads AFTER that definition.  Put this block first and
 ;;; your S::STARTUP will overwrite the tracker's.
 ;;;
-;;; The only thing to edit is the server path on the marked line.
+;;; >>> WRITE PATHS WITH FORWARD SLASHES. <<<
+;;; AutoLISP reads a backslash inside quotes as an escape code, so
+;;; "F:\0000-Drafting" is NOT that folder - \0 is read as a character
+;;; code and the path is quietly mangled.  Forward slashes have no such
+;;; problem and are converted for you below, so write:
+;;;       "F:/0000-Drafting/21-CADHours"
+;;; A UNC path is "//SERVER/CAD/CADHours".
+;;; (Doubled backslashes, "F:\\0000-Drafting", also work if you prefer.)
 ;;; ============================================================
 
+(vl-load-com)
+
 (
-  (lambda ( / cand hit c tp)
+  (lambda ( / cand hit c p tp)
 
     ;;-------------------------------------------------------------
     ;; 1.  Where the tracker lives.  The first folder that actually
     ;;     contains CADHours.lsp wins, so a laptop can carry a local
     ;;     copy that is used whenever the server is out of reach.
+    ;;
+    ;;     If your drive letters are not mapped the same on every PC,
+    ;;     use the UNC form instead - it does not depend on a mapping.
     ;;-------------------------------------------------------------
     (setq cand
       (list
-        "\\\\SERVER\\CAD\\CADHours"      ; <<<<<< EDIT THIS LINE
-        "C:\\CAD\\CADHours"              ; optional local fallback
+        "F:/0000-Drafting/21-CADHours"   ; <<<<<< the shared folder
+        "C:/CAD/CADHours"                ; optional local fallback
       ))
 
     (foreach c cand
-      (if (and (null hit) (findfile (strcat c "\\CADHours.lsp")))
-        (setq hit c)
+      (setq p (vl-string-translate "/" "\\" c))
+      (if (and (null hit) (findfile (strcat p "\\CADHours.lsp")))
+        (setq hit p)
       )
     )
 
     (if (null hit)
-      (princ "\n** CAD Hours Tracker not found - time is NOT being tracked.")
-      (progn
 
+      ;;-----------------------------------------------------------
+      ;; Not found.  Print the paths exactly as AutoLISP read them,
+      ;; because a mangled path is the usual cause and is obvious the
+      ;; moment you can see it.
+      ;;-----------------------------------------------------------
+      (progn
+        (princ "\n** CAD Hours Tracker not found - time is NOT being tracked.")
+        (princ "\n   Looked for CADHours.lsp in:")
+        (foreach c cand
+          (princ (strcat "\n     " (vl-string-translate "/" "\\" c)))
+        )
+        (princ "\n   If a path above is not what you typed, the backslashes were")
+        (princ "\n   read as escape codes.  Write it with forward slashes:")
+        (princ "\n     \"F:/0000-Drafting/21-CADHours\"")
+        (princ "\n   If the path is right, check the folder really holds CADHours.lsp.")
+      )
+
+      (progn
         ;;-----------------------------------------------------------
         ;; 2.  Tell AutoCAD the folder is safe to run code from, so
         ;;     SECURELOAD does not block it.  Harmless if the folder

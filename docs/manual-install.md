@@ -22,7 +22,7 @@ It prints the full path of the file AutoCAD is actually loading, or `nil` if
 there isn't one.
 
 **If that path is already on a network drive** (something like
-`\\SERVER\CAD\Support\acaddoc.lsp`), every PC is loading the same file. You
+`F:\0000-Drafting\Support\acaddoc.lsp`), every PC is loading the same file. You
 edit it once and the entire office is done — skip straight to Part A, then do
 Part B a single time.
 
@@ -38,27 +38,33 @@ repeat Part B on each one. That is the case the rest of this assumes.
 Keep the program and the data apart, because they need different permissions:
 
 ```
-\\SERVER\CAD\CADHours\          the tracker itself
-\\SERVER\CAD\CADHoursData\      the hours that get logged
+F:\0000-Drafting\21-CADHours\        the tracker itself
+F:\0000-Drafting\22-CADHoursData\    the hours that get logged
 ```
 
-Use whatever server and share names you actually have. Write them down — you
-will type them twice in Part A and once per PC in Part B.
+Use whatever folders you actually have. Write them down — you will type them
+twice in Part A and check them once per PC in Part B.
+
+> **If `F:` is a mapped network drive**, it has to be mapped to the same place
+> on every PC, under each user's own login. That is usually true in a small
+> office, but if it is not, use the UNC form instead — `//SERVER/Share/...` —
+> which does not depend on a drive mapping at all. You can check what `F:` is
+> on a PC with `net use F:` at a command prompt.
 
 ## A2. Set permissions
 
 | Folder | CAD users need | Why |
 |---|---|---|
-| `CADHours\` | **Read** | They run the code; they must not be able to change it. |
-| `CADHoursData\` | **Modify** | Each session writes a row and creates its own sub-folders. |
+| `21-CADHours\` | **Read** | They run the code; they must not be able to change it. |
+| `22-CADHoursData\` | **Modify** | Each session writes a row and creates its own sub-folders. |
 
-Read-only on `CADHours\` is what stops someone editing the tracker for
-themselves. Modify on `CADHoursData\` is required — Read-only there means no
+Read-only on `21-CADHours\` is what stops someone editing the tracker for
+themselves. Modify on `22-CADHoursData\` is required — Read-only there means no
 hours get logged at all.
 
 ## A3. Copy the tracker files in
 
-Into `\\SERVER\CAD\CADHours\`, copy these eight files, flat, no sub-folders:
+Into `F:\0000-Drafting\21-CADHours\`, copy these eight files, flat, no sub-folders:
 
 ```
 from src\      CADHours.lsp
@@ -74,7 +80,7 @@ from install\  cadhours.ini
 The folder should look exactly like this when you are done:
 
 ```
-\\SERVER\CAD\CADHours\
+F:\0000-Drafting\21-CADHours\
 ├─ CADHours.lsp
 ├─ CADHours-Core.lsp
 ├─ CADHours-Dashboard.lsp
@@ -87,16 +93,26 @@ The folder should look exactly like this when you are done:
 
 ## A4. Point the logging at the shared folder
 
-Open `\\SERVER\CAD\CADHours\cadhours.ini` in Notepad and change the `LogRoot`
+Open `F:\0000-Drafting\21-CADHours\cadhours.ini` in Notepad and change the `LogRoot`
 line to your data folder:
 
 ```ini
-LogRoot            = \\SERVER\CAD\CADHoursData
+LogRoot            = F:\0000-Drafting\22-CADHoursData
 ```
 
 This is the single line that makes every PC report to the same place. Because
 the ini file lives on the server next to the code, you set it once and every
 workstation picks it up.
+
+Two things to check:
+
+- **Only one `LogRoot` line may be active.** The file ships with a second one,
+  commented out with a leading `;`, for local testing. If both are live the
+  later one wins, which is a quiet way to end up logging somewhere you did not
+  expect.
+- **Do not double the backslashes here.** This is a settings file, not LISP
+  source, so `F:\0000-Drafting\22-CADHoursData` is read exactly as written.
+  Only the path inside `acaddoc.lsp` needs forward slashes.
 
 While you are in there, confirm the job number format is right:
 
@@ -132,19 +148,36 @@ In AutoCAD:
 2. Open `install\acaddoc.lsp` from this repository.
 3. Copy **everything** in it and paste it at the **very end** of the PC's
    `acaddoc.lsp`.
-4. Edit the one marked line to your server folder:
+4. Check the folder on the marked line is right:
 
 ```lisp
-        "\\\\SERVER\\CAD\\CADHours"      ; <<<<<< EDIT THIS LINE
+        "F:/0000-Drafting/21-CADHours"   ; <<<<<< the shared folder
 ```
 
-> **The doubled backslashes are correct and required.** In AutoLISP a
-> backslash inside quotes has to be written twice. A UNC path that starts with
-> `\\SERVER` is therefore typed as `"\\\\SERVER\\CAD\\CADHours"`, and a drive
-> path `P:\CAD\CADHours` is typed as `"P:\\CAD\\CADHours"`. Getting this wrong
-> is the single most common reason it does not load.
+> **Write the path with forward slashes.** AutoLISP reads a backslash inside
+> quotes as an escape code, so `"F:\0000-Drafting"` is *not* that folder —
+> `\0` is read as a character code and the path is silently mangled into
+> something that cannot match anything. Forward slashes have no such problem
+> and the block converts them for you.
+>
+> | Write this | Not this |
+> |---|---|
+> | `"F:/0000-Drafting/21-CADHours"` | `"F:\0000-Drafting\21-CADHours"` |
+> | `"//SERVER/CAD/CADHours"` | `"\\SERVER\CAD\CADHours"` |
+>
+> Doubled backslashes (`"F:\\0000-Drafting\\21-CADHours"`) also work if you
+> prefer them, but forward slashes are one less thing to get wrong.
 
 5. Save the file.
+
+6. Confirm AutoCAD can see the folder. At the command line, type:
+
+```
+(findfile "F:/0000-Drafting/21-CADHours/CADHours.lsp")
+```
+
+It must print the path back. If it prints `nil`, AutoCAD cannot reach that
+file — fix that before going any further, because nothing else will work.
 
 ### Why the end, and not the top
 
@@ -182,7 +215,7 @@ AutoCAD refuses to run code from unknown locations. The pasted block tries to
 add the folder for you, but set it explicitly so it is not left to chance:
 
 **Options ▸ Files ▸ Trusted Locations ▸ Add…** → browse to
-`\\SERVER\CAD\CADHours` → OK.
+`F:\0000-Drafting\21-CADHours` → OK.
 
 AutoCAD will warn that the folder is not read-only if you skipped A2. That
 warning is telling you something real — go back and make it read-only.
@@ -206,7 +239,7 @@ Close AutoCAD completely and reopen it, then open any drawing.
 Then check the server: a file has appeared under
 
 ```
-\\SERVER\CAD\CADHoursData\sessions\<YYYY-MM>\<USER>__<PC>__<YYYY-MM>.csv
+F:\0000-Drafting\22-CADHoursData\sessions\<YYYY-MM>\<USER>__<PC>__<YYYY-MM>.csv
 ```
 
 That file appearing, with the right user and PC name in it, is the proof this
@@ -224,7 +257,7 @@ PC name: ______________   User: ______________
 [ ] B1  (findfile "acaddoc.lsp") ran, path noted: ________________________
 [ ] B2  block pasted at the END of that file, backup taken first
 [ ] B2  server path edited, backslashes doubled
-[ ] B3  \\SERVER\CAD\CADHours added to Trusted Locations
+[ ] B3  F:\0000-Drafting\21-CADHours added to Trusted Locations
 [ ] B4  AutoCAD restarted
 [ ] B4  pop-up appeared on opening a drawing
 [ ] B4  CHCONFIG shows the data folder and [reachable]
@@ -235,7 +268,7 @@ PC name: ______________   User: ______________
 
 ## Updating the tracker later
 
-Replace the `.lsp` files in `\\SERVER\CAD\CADHours\` on the server. Every PC
+Replace the `.lsp` files in `F:\0000-Drafting\21-CADHours\` on the server. Every PC
 picks up the new version the next time AutoCAD starts. Nothing to redo on the
 workstations.
 
@@ -247,7 +280,7 @@ Two cautions:
   the program.
 
 Changing a setting for the whole office is the same idea: edit
-`\\SERVER\CAD\CADHours\cadhours.ini`, and everyone picks it up on their next
+`F:\0000-Drafting\21-CADHours\cadhours.ini`, and everyone picks it up on their next
 AutoCAD start.
 
 ---
@@ -259,12 +292,12 @@ not load and nothing is tracked while it is away.
 
 If that matters, give the laptop a local copy as well:
 
-1. Copy the eight files from `\\SERVER\CAD\CADHours\` to `C:\CAD\CADHours\` on
+1. Copy the eight files from `F:\0000-Drafting\21-CADHours\` to `C:\CAD\CADHours\` on
    the laptop.
 2. Edit **the local copy's** `cadhours.ini` and set:
 
    ```ini
-   LogRoot            = \\SERVER\CAD\CADHoursData
+   LogRoot            = F:\0000-Drafting\22-CADHoursData
    LocalSpool         = %LOCALAPPDATA%\CADHours\spool
    ```
 
@@ -293,8 +326,10 @@ add the block to each file it reports. The same server folder serves them all.
 
 | What you see | What it means | Fix |
 |---|---|---|
-| No pop-up, and `CADHOURS` is an unknown command | The block never ran | Re-check the path in the block, backslashes doubled. Confirm with `(findfile "\\\\SERVER\\CAD\\CADHours\\CADHours.lsp")` — it must return the path, not `nil`. |
-| `** CAD Hours Tracker not found` on the command line | The block ran but the folder is wrong or unreachable | Paste the server path into Explorer's address bar. If it does not open there, it is a share or permissions problem, not AutoCAD. |
+| No pop-up, and `CADHOURS` is an unknown command | The block never ran at all | The block is not in the `acaddoc.lsp` AutoCAD actually loads. Re-run `(findfile "acaddoc.lsp")` and check you edited that exact file. |
+| `** CAD Hours Tracker not found`, and the paths it lists look scrambled — `F:<00>0-Drafting` or similar | The path was written with single backslashes, so AutoLISP read them as escape codes | Rewrite it with forward slashes: `"F:/0000-Drafting/21-CADHours"`. |
+| `** CAD Hours Tracker not found`, and the paths it lists look correct | The folder is genuinely not reachable, or does not hold `CADHours.lsp` | Paste the path into Explorer's address bar. Then check `(findfile "F:/0000-Drafting/21-CADHours/CADHours.lsp")` returns the path. |
+| It loads, but hours appear in `C:\Users\...\AppData\Local\CADHours` | `LogRoot` in the server's `cadhours.ini` is still the local testing line | Comment out the `%LOCALAPPDATA%` line and make the `F:` one active. Check with `CHCONFIG`. |
 | A security / "file with executable code" warning | The folder is not trusted | Do step B3. |
 | No pop-up, but `CADHOURS` works and time starts after your first command | The block was pasted above an `S::STARTUP` definition | Move it to the end of the file. |
 | `CHCONFIG` says `[NOT reachable]` | The PC cannot write to the data folder | Check the share is mapped and the user has **Modify** on `CADHoursData`. Hours spool locally in the meantime and upload later. |
