@@ -118,6 +118,10 @@ task, over any period, and can write the summary out as a CSV.
 search, filter by user / job / date, pivot by any of nine groupings, and
 download either the summary or the raw sessions. No web server, no internet.
 
+`CHDASHALL` does the same with no prompts, covering every session from every
+user — the one to use for a daily refresh, since it cannot be left on
+month-to-date by accident.
+
 The page is a snapshot taken when the command runs, not a live feed — the rows
 are embedded in the file itself, which is exactly why it works from a share
 with nothing installed and can be emailed to someone who has no AutoCAD. The

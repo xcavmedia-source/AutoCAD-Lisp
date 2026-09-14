@@ -78,6 +78,7 @@ prompts: **[docs/deployment.md](docs/deployment.md)**.
 | `CHREPORT` | Guided report — group by job, user, day, week, month, drawing or task |
 | `CHEXPORT` | Write matching sessions to a CSV |
 | `CHDASH` | Build and open the searchable HTML dashboard |
+| `CHDASHALL` | Refresh that dashboard with every session, all users, no prompts |
 | `CHRECOVER` | Re-file sessions left behind by a crash |
 | `CHCONFIG` | Show the settings actually in force |
 | `CADHOURS` | Command summary |
@@ -88,8 +89,9 @@ nothing installed. Hand it to a project manager who does not have AutoCAD.
 
 It is a **snapshot, not a live view.** The hours are baked into the page when
 you run the command, so reloading it in the browser shows the same numbers;
-run `CHDASH` again to refresh. It always writes to the same path, so a desktop
-shortcut or a link keeps working:
+run it again to refresh. `CHDASHALL` does that with no prompts — every
+session, every user — which is what to use as an end-of-day habit. It always
+writes to the same path, so a desktop shortcut or a link keeps working:
 
 ```
 <LogRoot>\reports\CADHours-Dashboard.html

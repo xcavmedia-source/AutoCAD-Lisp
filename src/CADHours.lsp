@@ -17,6 +17,7 @@
 ;;;   CHREPORT    guided report
 ;;;   CHEXPORT    export matching sessions to CSV
 ;;;   CHDASH      build and open the HTML dashboard
+;;;   CHDASHALL   refresh it with every session, no prompts
 ;;;   CHRECOVER   re-file sessions left behind by a crash
 ;;;   CHCONFIG    show the active settings
 ;;;   CADHOURS    command summary
@@ -301,6 +302,7 @@
   (princ "\n  CHREPORT    guided report with a grouping of your choice")
   (princ "\n  CHEXPORT    write matching sessions to a CSV")
   (princ "\n  CHDASH      build and open the searchable HTML dashboard")
+  (princ "\n  CHDASHALL   refresh that dashboard with everything, no prompts")
   (princ "\n")
   (princ "\n  CHRECOVER   re-file sessions left behind by a crash")
   (princ "\n  CHCONFIG    show the active settings")

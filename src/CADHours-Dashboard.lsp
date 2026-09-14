@@ -135,14 +135,15 @@
 ;;; a project manager keeps working.  Each run overwrites it with a
 ;;; fresh snapshot rather than leaving a trail of dated files nobody
 ;;; can tell apart.
-(defun ch:build-dashboard (rows from to tag / tpl out f lines wrote ln)
+(defun ch:build-dashboard (rows from to tag / tpl dir out tmp f lines wrote ln)
   (setq tpl   (ch:template-file)
-        out   (ch:path+ (ch:reports-dir (ch:root))
-                        "CADHours-Dashboard.html")
+        dir   (ch:reports-dir (ch:root))
+        out   (ch:path+ dir "CADHours-Dashboard.html")
+        tmp   (ch:path+ dir (strcat "~dash-" (ch:compact-str (ch:parts)) ".tmp"))
         lines (if tpl (ch:read-lines tpl) (ch:fallback-html))
         wrote nil)
-  (ch:mkpath (ch:reports-dir (ch:root)))
-  (if (and lines (setq f (open out "w")))
+  (ch:mkpath dir)
+  (if (and lines (setq f (open tmp "w")))
     (progn
       (foreach ln lines
         (if (vl-string-search (ch:dash-marker) ln)
@@ -151,11 +152,26 @@
         )
       )
       (close f)
-      (if wrote
-        out
-        (progn
+      (cond
+        ((null wrote)
+          (vl-file-delete tmp)
           (ch:say "The dashboard template has no data marker - page not built.")
-          nil
+          nil)
+        ;; swap the finished page into place.  Building to a temp file
+        ;; first means anyone opening the shared link always gets a
+        ;; complete page - either the previous one or the new one, never
+        ;; a half-written file - and two people rebuilding at the same
+        ;; moment cannot interleave their output.
+        (T
+          (vl-file-delete out)
+          (if (vl-file-rename tmp out)
+            out
+            (progn
+              (ch:say (strcat "Could not replace " out))
+              (ch:say (strcat "The new page is here instead: " tmp))
+              tmp
+            )
+          )
         )
       )
     )
@@ -178,6 +194,23 @@
     )
   )
   (princ)
+)
+
+
+;;; Earliest and latest date present in ROWS, so an "everything on
+;;; record" dashboard can show the span it really covers instead of a
+;;; sentinel range.
+(defun ch:row-span (rows / lo hi d r)
+  (foreach r rows
+    (setq d (ch:r-date r))
+    (if (/= d "")
+      (progn
+        (if (or (null lo) (< d lo)) (setq lo d))
+        (if (or (null hi) (> d hi)) (setq hi d))
+      )
+    )
+  )
+  (list (if lo lo (ch:today)) (if hi hi (ch:today)))
 )
 
 
@@ -219,6 +252,37 @@
       (if file
         (progn
           (ch:say (strcat (itoa (length rows)) " session(s) -> " file))
+          (ch:open-file file)
+        )
+        (ch:say "Could not write the dashboard.")
+      )
+    )
+  )
+  (princ)
+)
+
+
+
+;;; Refresh the shared dashboard with every session on record, for every
+;;; user, with no prompts.  This is the one to use as an end-of-day
+;;; habit, or from a scheduled run - there is nothing to type and no
+;;; chance of leaving the period on month-to-date by accident.
+(defun c:CHDASHALL ( / rows span file)
+  (ch:cfg-load)
+  (ch:say "Rebuilding the dashboard from every recorded session...")
+  (setq rows (ch:load-rows "0000-01-01" "9999-12-31"))
+  (if (null rows)
+    (progn
+      (ch:say (strcat "No sessions found under " (ch:path+ (ch:root) "sessions") "."))
+      (ch:say "Nothing written.  CHSTATUS will show whether tracking is running.")
+    )
+    (progn
+      (setq span (ch:row-span rows)
+            file (ch:build-dashboard rows (car span) (cadr span) "all"))
+      (if file
+        (progn
+          (ch:say (strcat (itoa (length rows)) " session(s), "
+                          (car span) " to " (cadr span) " -> " file))
           (ch:open-file file)
         )
         (ch:say "Could not write the dashboard.")
