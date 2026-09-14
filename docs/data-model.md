@@ -40,9 +40,22 @@ One row per drawing session. This is what every report reads.
 | 18 | `commands` | `412` | Rough measure of how busy the session was |
 | 19 | `notes` | | Free text from the pop-up |
 | 20 | `version` | `1.0.0` | Tracker version that wrote the row |
+| 21 | `manager` | `David Cruz` | Project manager, chosen from `managers.txt` |
 
 `date`, `week` and `month` are pre-computed on purpose: any tool can group by
 them without knowing how to parse a date or which week numbering you use.
+
+### Columns are only ever appended
+
+`manager` sits after `version` rather than next to `task`, which reads oddly
+but is deliberate: inserting a column in the middle would shift every field in
+every row already on the share, silently turning old data into nonsense. New
+columns go on the end, and rows written before a column existed simply run out
+of fields early and read as empty.
+
+The header of an existing monthly file is corrected in place the first time a
+row with a new column is appended to it, so the CSV never opens in Excel with
+an unnamed column.
 
 ### Why one file per user per month
 

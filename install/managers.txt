@@ -1,0 +1,28 @@
+; ============================================================
+;  CAD Hours Tracker - project managers
+;
+;  One name per line.  This is the list that appears in the
+;  drop-down on the job number pop-up.
+;
+;  * Lines starting with ;  or  #  are ignored, so you can keep
+;    notes or park a name without deleting it.
+;  * Blank lines are ignored.
+;  * The order here is the order in the drop-down, so put the
+;    busiest managers at the top if you like.
+;  * The file is re-read every time the pop-up opens.  Add or
+;    remove a name, save, and the next drawing anyone opens shows
+;    the change - nobody has to restart AutoCAD.
+;
+;  Write the name exactly as you want it to appear in reports and
+;  on the dashboard, because that is the text that gets logged.
+;  Keep the spelling consistent: "Dave Cruz" and "David Cruz"
+;  would show up as two different managers.
+;
+;  Lives next to cadhours.ini.  To keep it somewhere else, set
+;  ManagerFile in cadhours.ini to the full path.
+; ============================================================
+
+David Cruz
+
+; --- add your project managers below, one per line -------------
+

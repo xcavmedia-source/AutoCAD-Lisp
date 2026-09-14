@@ -187,42 +187,121 @@
 )
 
 
-;;; ---- the dialog --------------------------------------------------------
-
-;;; DCL source for the pop-up.  It is written to a temporary file at
-;;; run time so the tracker does not depend on AutoCAD's support file
-;;; search path finding a .dcl.
-(defun ch:dcl-source ()
-  (list
-    "cadhours_job : dialog {"
-    "  label = \"CAD Hours Tracker\";"
-    "  : boxed_column {"
-    "    label = \"Drawing\";"
-    "    : text { key = \"dwgname\"; width = 64; }"
-    "    : text { key = \"dwgpath\"; width = 64; }"
-    "  }"
-    "  : boxed_column {"
-    "    label = \"Charge this time to\";"
-    "    : edit_box   { key = \"job\";    label = \"&Job number:\";  edit_width = 26; }"
-    "    : popup_list { key = \"recent\"; label = \"&Recent jobs:\"; edit_width = 26; }"
-    "    : edit_box   { key = \"task\";   label = \"&Task / phase:\"; edit_width = 26; }"
-    "    : edit_box   { key = \"notes\";  label = \"&Notes:\";        edit_width = 44; }"
-    "    : text { key = \"hint\"; width = 64; }"
-    "  }"
-    "  : errtile { width = 64; }"
-    "  : row {"
-    "    : spacer { width = 1; }"
-    "    : button { key = \"accept\"; label = \"  OK  \"; is_default = true; width = 14; fixed_width = true; }"
-    "    : button { key = \"cancel\"; label = \" Skip \"; is_cancel = true; width = 14; fixed_width = true; }"
-    "    : spacer { width = 1; }"
-    "  }"
-    "}"
+;;; Best guess at the project manager for JOB.
+(defun ch:suggest-manager (job / m)
+  (cond
+    ((and *ch-active* (/= (ch:str *ch-mgr*) "")) *ch-mgr*)
+    ((setq m (ch:job-mgr-recall job)) m)
+    (T (ch:mgr-last))
   )
 )
 
-;;; Write the DCL to a temp file and return its path
+
+;;; ---- the dialog --------------------------------------------------------
+
+(defun ch:note-lines ()
+  (max 1 (min 8 (ch:cfg-int "NoteLines" 4)))
+)
+
+(defun ch:note-width () 200)
+
+;;; Spread TEXT over COUNT boxes, breaking on spaces.  Anything past the
+;;; last box is crammed into it rather than dropped.
+(defun ch:wrap-note (text count width / words out line w n)
+  (setq words (ch:split (ch:trim (ch:str text)) " ")
+        out   '()
+        line  "")
+  (foreach w words
+    (cond
+      ((= w "") nil)
+      ((= line "") (setq line w))
+      ((<= (+ (strlen line) 1 (strlen w)) width)
+        (setq line (strcat line " " w)))
+      (T (setq out (cons line out)) (setq line w))
+    )
+  )
+  (if (/= line "") (setq out (cons line out)))
+  (setq out (reverse out))
+  ;; more lines than boxes: join the tail into the last box
+  (if (> (length out) count)
+    (progn
+      (setq n    (- count 1)
+            line (ch:join (ch:nthcdr n out) " ")
+            out  (append (ch:firstn out n) (list line)))
+    )
+  )
+  out
+)
+
+(defun ch:firstn (lst n / out)
+  (while (and lst (> n 0))
+    (setq out (cons (car lst) out)
+          lst (cdr lst)
+          n   (1- n))
+  )
+  (reverse out)
+)
+
+(defun ch:nthcdr (n lst)
+  (while (and lst (> n 0)) (setq lst (cdr lst) n (1- n)))
+  lst
+)
+
+;;; DCL source for the pop-up, built at run time so the number of note
+;;; boxes can follow the NoteLines setting.  It is written to a
+;;; temporary file, so the tracker does not depend on AutoCAD's support
+;;; file search path finding a .dcl.
+;;;
+;;; DCL has no multi-line text tile - it is simply not in the tile set -
+;;; so a long note is taken across several stacked edit boxes and joined
+;;; back into one value on OK.
+(defun ch:dcl-source ( / out i)
+  (setq out
+    (list
+      "cadhours_job : dialog {"
+      "  label = \"CAD Hours Tracker\";"
+      "  : boxed_column {"
+      "    label = \"Drawing\";"
+      "    : text { key = \"dwgname\"; width = 64; }"
+      "    : text { key = \"dwgpath\"; width = 64; }"
+      "  }"
+      "  : boxed_column {"
+      "    label = \"Charge this time to\";"
+      "    : edit_box   { key = \"job\";     label = \"&Job number:\";      edit_width = 26; edit_limit = 64; }"
+      "    : popup_list { key = \"recent\";  label = \"&Recent jobs:\";     edit_width = 26; }"
+      "    : popup_list { key = \"manager\"; label = \"Project &manager:\"; edit_width = 26; }"
+      "    : edit_box   { key = \"task\";    label = \"&Task / phase:\";    edit_width = 26; edit_limit = 64; }"
+      "    : text { key = \"hint\"; width = 64; }"
+      "  }"
+      "  : boxed_column {"
+      "    label = \"&Notes (optional)\";"
+    ))
+  (setq i 0)
+  (repeat (ch:note-lines)
+    (setq out (append out
+      (list (strcat "    : edit_box { key = \"n" (itoa i)
+                    "\"; edit_width = 62; edit_limit = 250; }"))))
+    (setq i (1+ i))
+  )
+  (append out
+    (list
+      "  }"
+      "  : errtile { width = 64; }"
+      "  : row {"
+      "    : spacer { width = 1; }"
+      "    : button { key = \"accept\"; label = \"  OK  \"; is_default = true; width = 14; fixed_width = true; }"
+      "    : button { key = \"cancel\"; label = \" Skip \"; is_cancel = true; width = 14; fixed_width = true; }"
+      "    : spacer { width = 1; }"
+      "  }"
+      "}"
+    ))
+)
+
+;;; Write the DCL to a temp file and return its path.  Rebuilt whenever
+;;; the note-line count changes.
 (defun ch:dcl-file ( / path f ln)
-  (if (and *ch-dcl-path* (findfile *ch-dcl-path*))
+  (if (and *ch-dcl-path* (findfile *ch-dcl-path*)
+           (= *ch-dcl-lines* (ch:note-lines)))
     *ch-dcl-path*
     (progn
       (setq path (vl-filename-mktemp "cadhours" nil ".dcl"))
@@ -230,6 +309,7 @@
         (progn
           (foreach ln (ch:dcl-source) (write-line ln f))
           (close f)
+          (setq *ch-dcl-lines* (ch:note-lines))
           (setq *ch-dcl-path* path)
         )
       )
@@ -237,37 +317,60 @@
   )
 )
 
+;;; Collect the note boxes into one value
+(defun ch:read-notes ( / i out v)
+  (setq i 0 out '())
+  (repeat (ch:note-lines)
+    (setq v (ch:trim (get_tile (strcat "n" (itoa i)))))
+    (if (/= v "") (setq out (cons v out)))
+    (setq i (1+ i))
+  )
+  (ch:join (reverse out) " ")
+)
+
+;;; The manager the dropdown is currently showing, "" for "(none)"
+(defun ch:read-manager ( / i)
+  (setq i (atoi (ch:str (get_tile "manager"))))
+  (if (and (> i 0) *ch-mgr-list*) (nth i *ch-mgr-list*) "")
+)
+
 ;;; OK button.  Validates before it lets the dialog close.
-(defun ch:dlg-accept ( / j)
-  (setq j (ch:trim (get_tile "job")))
+(defun ch:dlg-accept ( / j m)
+  (setq j (ch:trim (get_tile "job"))
+        m (ch:read-manager))
   (cond
     ((and (= j "") (ch:cfg-bool "RequireJobNumber" T))
       (set_tile "error" "A job number is required for time tracking."))
     ((and (/= j "") (not (ch:valid-job j)))
       (set_tile "error"
-        (strcat "\"" j "\" is not a valid job number.  "
-                (ch:job-hint))))
+        (strcat "\"" j "\" is not a valid job number.  " (ch:job-hint))))
+    ((and (= m "") (ch:cfg-bool "RequireManager" nil))
+      (set_tile "error" "Please choose the project manager for this job."))
     (T
       (setq *ch-dlg-job*   j
             *ch-dlg-task*  (ch:trim (get_tile "task"))
-            *ch-dlg-notes* (ch:trim (get_tile "notes")))
+            *ch-dlg-mgr*   m
+            *ch-dlg-notes* (ch:read-notes))
       (done_dialog 1)
     )
   )
   (princ)
 )
 
-;;; Show the pop-up.  Returns (job task notes), or nil when the user
-;;; skipped it.  EXTRA is appended to the hint line.
+;;; Show the pop-up.  Returns (job task notes manager), or nil when the
+;;; user skipped it.  EXTRA is appended to the hint line.
 ;;; Sets *ch-dlg-shown* so the caller can tell "user pressed Skip"
 ;;; from "the dialog could not be displayed".
-(defun ch:job-dialog (job task notes extra / dcl id rc rec hint)
+(defun ch:job-dialog (job task notes mgr extra / dcl id rc rec hint mgrs i lines)
   (setq *ch-dlg-job*    nil
         *ch-dlg-task*   nil
         *ch-dlg-notes*  nil
+        *ch-dlg-mgr*    nil
         *ch-dlg-shown*  nil
         rc              0
         rec             (ch:mru-get)
+        mgrs            (ch:managers)
+        *ch-mgr-list*   (cons "" mgrs)
         hint            (ch:trim (strcat (ch:job-hint) "  " (ch:str extra))))
   (if (and (setq dcl (ch:dcl-file))
            (setq id (load_dialog dcl))
@@ -281,12 +384,28 @@
           (set_tile "dwgpath" (strcat "  " (ch:str (ch:dwg-path))))
           (set_tile "job"     (ch:str job))
           (set_tile "task"    (ch:str task))
-          (set_tile "notes"   (ch:str notes))
           (set_tile "hint"    (strcat "  " hint))
 
           (start_list "recent")
           (if rec (mapcar 'add_list rec) (add_list "(none yet)"))
           (end_list)
+
+          ;; the manager dropdown, with a blank first entry so it can be
+          ;; left unanswered when RequireManager is off
+          (start_list "manager")
+          (add_list (if mgrs "(none)" "(no managers.txt found)"))
+          (if mgrs (mapcar 'add_list mgrs))
+          (end_list)
+          (setq i (ch:index-of mgr *ch-mgr-list*))
+          (set_tile "manager" (itoa (if i i 0)))
+
+          ;; the note, spread across the boxes
+          (setq lines (ch:wrap-note notes (ch:note-lines) (ch:note-width))
+                i     0)
+          (repeat (ch:note-lines)
+            (set_tile (strcat "n" (itoa i)) (ch:str (nth i lines)))
+            (setq i (1+ i))
+          )
 
           (action_tile "recent"
             "(if rec (set_tile \"job\" (nth (atoi $value) rec)))")
@@ -302,13 +421,26 @@
     )
   )
   (if (and (= rc 1) *ch-dlg-job*)
-    (list *ch-dlg-job* (ch:str *ch-dlg-task*) (ch:str *ch-dlg-notes*))
+    (list *ch-dlg-job* (ch:str *ch-dlg-task*)
+          (ch:str *ch-dlg-notes*) (ch:str *ch-dlg-mgr*))
   )
+)
+
+;;; Position of VALUE in LST, case-insensitive, or nil
+(defun ch:index-of (value lst / i hit n)
+  (setq value (strcase (ch:trim (ch:str value))) i 0)
+  (if (/= value "")
+    (foreach n lst
+      (if (and (null hit) (= (strcase (ch:str n)) value)) (setq hit i))
+      (setq i (1+ i))
+    )
+  )
+  hit
 )
 
 ;;; Command-line fallback, for the rare case where the dialog cannot
 ;;; be shown.  Never called from a reactor.
-(defun ch:job-getstring (job / s)
+(defun ch:job-getstring (job mgr / s)
   (setq s (getstring T
             (strcat "\nJob number for this drawing"
                     (if (/= job "") (strcat " <" job ">") "")
@@ -316,7 +448,7 @@
                     ": ")))
   (setq s (ch:trim s))
   (if (= s "") (setq s job))
-  (if (ch:valid-job s) (list s "" "") nil)
+  (if (ch:valid-job s) (list s "" "" (ch:str mgr)) nil)
 )
 
 
@@ -326,26 +458,30 @@
 ;;; ALLOW-CLI lets the command-line fallback run; pass nil when the
 ;;; call originates in a reactor.
 ;;; Returns T when a job number was captured.
-(defun ch:ask-job (allow-cli / path guess res)
+(defun ch:ask-job (allow-cli / path guess mgr res)
   (setq path  (ch:dwg-path)
         guess (ch:suggest-job path))
   (if (and *ch-active* (/= *ch-job* "") (/= (strcase *ch-job*) "UNASSIGNED"))
     (setq guess (list *ch-job* *ch-task* "the running session"))
   )
+  (setq mgr (ch:suggest-manager (car guess)))
   (setq *ch-last-prompt* (ch:now))
-  (setq res (ch:job-dialog (car guess) (cadr guess) *ch-notes*
+  (setq res (ch:job-dialog (car guess) (cadr guess) *ch-notes* mgr
                            (if (= (caddr guess) "")
                              ""
                              (strcat "Suggested job comes from " (caddr guess) "."))))
   ;; the dialog could not be shown at all - fall back to the prompt
   (if (and (null res) (null *ch-dlg-shown*) allow-cli)
-    (setq res (ch:job-getstring (car guess)))
+    (setq res (ch:job-getstring (car guess) mgr))
   )
   (cond
     (res
-      (ch:set-job (car res) (cadr res) (caddr res))
+      (ch:set-job (car res) (cadr res) (caddr res) (cadddr res))
       (ch:dwg-remember path (car res) (cadr res))
       (ch:say (strcat "Tracking time on job " (car res)
+                      (if (= (ch:str (cadddr res)) "")
+                        ""
+                        (strcat " for " (cadddr res)))
                       " - type CHSTATUS at any time."))
       T
     )

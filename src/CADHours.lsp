@@ -142,7 +142,7 @@
 ;;; and CHJOB moves it onto a real job later.
 (defun ch:begin-with-prompt ()
   (if (not (ch:safe 'ch:ask-job (list T)))
-    (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" ""))
+    (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
   )
   (princ)
 )
@@ -150,7 +150,8 @@
 ;;; PromptOnOpen=0: track quietly against the best guess
 (defun ch:begin-silently ( / g)
   (setq g (ch:suggest-job (ch:dwg-path)))
-  (ch:start-session (if (= (car g) "") "UNASSIGNED" (car g)) (cadr g) "")
+  (ch:start-session (if (= (car g) "") "UNASSIGNED" (car g)) (cadr g) ""
+                    (ch:suggest-manager (car g)))
   (if (= (car g) "")
     (setq *ch-prompt-due* (ch:cfg-bool "RequireJobNumber" T))
   )
@@ -231,6 +232,8 @@
                            ((> (ch:secs *ch-last* (ch:now)) *ch-idle-limit*) "paused (idle)")
                            (T "running"))))
       (princ (strcat "\n  Job          : " (if (= *ch-job* "") "UNASSIGNED" *ch-job*)))
+      (if (/= (ch:str *ch-mgr*) "")
+        (princ (strcat "\n  Manager      : " *ch-mgr*)))
       (if (/= *ch-task* "")  (princ (strcat "\n  Task         : " *ch-task*)))
       (if (/= *ch-notes* "") (princ (strcat "\n  Notes        : " *ch-notes*)))
       (princ (strcat "\n  Drawing      : " *ch-dwg*))

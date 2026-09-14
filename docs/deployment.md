@@ -91,6 +91,9 @@ The settings worth thinking about before you roll out:
 | `JobFromPath` | `1` | `P:\Projects\P10432 Smith House\CAD\A-101.dwg` suggests `P10432` on its own. Users mostly just press Enter. |
 | `RequireJobNumber` | `1` | Keeps asking until a job is given. Time is banked as `UNASSIGNED` in the meantime, never lost. |
 | `MinSessionSeconds` | `10` | Stops "opened it to look at something" from filling the database. |
+| `ManagerFile` | *(blank)* | Blank means `managers.txt` beside `cadhours.ini`. Point it at the data folder if you want the list editable without touching the read-only program folder. |
+| `RequireManager` | `0` | Set to `1` to insist a manager is chosen before the pop-up closes. |
+| `NoteLines` | `4` | Lines in the notes area, 1 to 8. |
 
 ### `JobPattern` is already set to `P#####`
 

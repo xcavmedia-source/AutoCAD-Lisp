@@ -31,6 +31,7 @@
         *ch-sid*          ""      ; session id
         *ch-job*          ""      ; job number this time is billed to
         *ch-task*         ""      ; optional task / phase
+        *ch-mgr*          ""      ; project manager responsible for the job
         *ch-notes*        ""      ; optional note
         *ch-dwg*          ""      ; full path of the drawing
         *ch-doc-key*      ""      ; identity of this document
@@ -154,7 +155,7 @@
     ((and *ch-active* *ch-current*) (ch:accrue))
     ;; the drawing survived a cancelled close - reopen a segment
     ((and (not *ch-active*) *ch-current* (/= *ch-job* ""))
-      (ch:start-session *ch-job* *ch-task* *ch-notes*))
+      (ch:start-session *ch-job* *ch-task* *ch-notes* *ch-mgr*))
   )
   (princ)
 )
@@ -173,12 +174,16 @@
 
 ;;; ---- log records ---------------------------------------------------
 
+;;; Column order is append-only on purpose.  "manager" arrives after
+;;; "version" rather than next to "task", because inserting a column in
+;;; the middle would silently shift every field in every row already on
+;;; the share.
 (defun ch:session-columns ()
   (list "session_id" "status" "user" "machine" "job" "task"
         "dwg_name" "dwg_path" "start_local" "end_local"
         "date" "week" "month"
         "active_sec" "idle_sec" "wall_sec" "active_hours"
-        "saves" "commands" "notes" "version")
+        "saves" "commands" "notes" "version" "manager")
 )
 
 (defun ch:session-header ()
@@ -187,7 +192,7 @@
 
 (defun ch:event-columns ()
   (list "stamp" "event" "session_id" "user" "job" "dwg_path"
-        "active_sec" "idle_sec" "note")
+        "active_sec" "idle_sec" "note" "manager")
 )
 
 (defun ch:event-header ()
@@ -222,6 +227,7 @@
       (itoa *ch-cmds*)
       *ch-notes*
       *ch-version*
+      *ch-mgr*
     )
   )
 )
@@ -294,7 +300,8 @@
                       *ch-dwg*
                       (ch:isecs *ch-acc*)
                       (ch:isecs *ch-idle*)
-                      (ch:str note)))
+                      (ch:str note)
+                      *ch-mgr*))
               (ch:event-header)))
     )
   )
@@ -304,7 +311,7 @@
 
 ;;; ---- session lifecycle ---------------------------------------------
 
-(defun ch:start-session (job task notes / now)
+(defun ch:start-session (job task notes mgr / now)
   (if *ch-active* (ch:end-session "SPLIT"))
   (ch:cache-settings)
   (setq now              (ch:now)
@@ -312,6 +319,7 @@
         *ch-job*         (ch:trim (ch:str job))
         *ch-task*        (ch:trim (ch:str task))
         *ch-notes*       (ch:trim (ch:str notes))
+        *ch-mgr*         (ch:trim (ch:str mgr))
         *ch-dwg*         (ch:dwg-path)
         *ch-doc-key*     (vl-catch-all-apply 'ch:active-doc-key nil)
         *ch-start-date*  now
@@ -370,31 +378,37 @@
 ;;; Change the job mid-session.  Relabelling an unassigned session is
 ;;; free; moving real billed time to another job splits the session so
 ;;; each job keeps the minutes actually worked on it.
-(defun ch:set-job (job task notes)
-  (setq job (ch:trim (ch:str job)))
+(defun ch:set-job (job task notes mgr)
+  (setq job (ch:trim (ch:str job))
+        mgr (ch:trim (ch:str mgr)))
   (cond
     ((= job "") nil)
-    ((not *ch-active*) (ch:start-session job task notes))
+    ((not *ch-active*) (ch:start-session job task notes mgr))
     ((or (= *ch-job* "") (= (strcase *ch-job*) "UNASSIGNED"))
       (setq *ch-job*   job
             *ch-task*  (ch:trim (ch:str task))
-            *ch-notes* (ch:trim (ch:str notes)))
+            *ch-notes* (ch:trim (ch:str notes))
+            *ch-mgr*   mgr)
       (ch:log-event "JOB_SET" job)
       (ch:write-live)
     )
     ((= (strcase job) (strcase *ch-job*))
+      ;; same job: notes, task and manager are just corrections
       (setq *ch-task*  (ch:trim (ch:str task))
-            *ch-notes* (ch:trim (ch:str notes)))
+            *ch-notes* (ch:trim (ch:str notes))
+            *ch-mgr*   mgr)
       (ch:write-live)
     )
     (T
       (ch:end-session "SPLIT")
-      (ch:start-session job task notes)
+      (ch:start-session job task notes mgr)
     )
   )
   (setq *ch-prompt-due* nil)
   (ch:mru-add job)
-  (if (ch:cfg-bool "RememberJobInDwg" T) (ch:dwg-job-put job task))
+  (ch:job-mgr-remember job mgr)
+  (ch:mgr-remember-last mgr)
+  (if (ch:cfg-bool "RememberJobInDwg" nil) (ch:dwg-job-put job task))
   (princ)
 )
 

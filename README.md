@@ -32,12 +32,14 @@ Every session writes one row:
 | | |
 |---|---|
 | **Job number** | asked for on open, validated against your format |
+| **Project manager** | picked from a drop-down you maintain in `managers.txt` |
 | **File** | name and full path, following it through `SAVEAS` |
 | **User and machine** | Windows account and PC name |
 | **Date and time** | start, end, plus pre-computed day / ISO week / month |
 | **Billed time** | seconds actually worked, idle excluded |
 | **Idle time** | what was discarded, so the numbers are auditable |
 | **Saves and commands** | how busy the session was |
+| **Notes** | free text, four lines' worth |
 
 ---
 
@@ -54,6 +56,12 @@ Start AutoCAD and open any drawing. `Deploy-CADHours.bat /u` removes it again.
 validated on entry and read straight out of the folder path — the pop-up
 usually just needs Enter to confirm `P10432`. Change it there if the format
 ever moves.
+
+The project manager list is a plain text file — `managers.txt`, one name per
+line, next to `cadhours.ini`. It is re-read every time the pop-up opens, so
+adding or removing a name takes effect on the next drawing without anyone
+restarting AutoCAD. The manager chosen for a job is remembered and offered
+again the next time someone works on it.
 
 Rolling out to several PCs by hand instead — one copy of the tracker on a
 server, a few lines added to the `acaddoc.lsp` each PC already uses, everyone
@@ -154,6 +162,7 @@ src\      CADHours.lsp             loader, start-up hook, commands
 web\      dashboard-template.html  the dashboard's markup, CSS and JS
 install\  Deploy-CADHours.bat      one-command install / uninstall
           cadhours.ini             settings, fully commented
+          managers.txt             the project manager drop-down list
           CADHours.bundle\         AutoCAD AutoLoader manifest
           acaddoc.lsp              paste-in block for a manual network rollout
 docs\     language-choice.md       why AutoLISP, and when to switch to .NET

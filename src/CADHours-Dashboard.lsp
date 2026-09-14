@@ -45,13 +45,14 @@
         (ch:json-str (ch:r-stat r))
         (ch:json-str (ch:fld r *ch-col-mach*))
         (ch:json-str (ch:fld r *ch-col-notes*))
+        (ch:json-str (ch:r-mgr r))
       )
       ",")
     "]")
 )
 
 (defun ch:dash-columns ()
-  "[\"user\",\"job\",\"task\",\"date\",\"week\",\"month\",\"dwg\",\"path\",\"start\",\"end\",\"active\",\"idle\",\"status\",\"machine\",\"notes\"]"
+  "[\"user\",\"job\",\"task\",\"date\",\"week\",\"month\",\"dwg\",\"path\",\"start\",\"end\",\"active\",\"idle\",\"status\",\"machine\",\"notes\",\"manager\"]"
 )
 
 (defun ch:dash-marker () "/*__CADHOURS_DATA__*/")
@@ -107,8 +108,8 @@
     "</style>"
     "<h1>CAD Hours</h1>"
     "<input id=\"q\" placeholder=\"Filter by user, job, drawing, date...\">"
-    "<table><thead><tr><th>Date</th><th>User</th><th>Job</th><th>Task</th>"
-    "<th>Drawing</th><th class=\"n\">Hours</th><th>Status</th></tr></thead>"
+    "<table><thead><tr><th>Date</th><th>User</th><th>Job</th><th>Manager</th>"
+    "<th>Task</th><th>Drawing</th><th class=\"n\">Hours</th><th>Status</th></tr></thead>"
     "<tbody id=\"b\"></tbody></table>"
     "<script>"
     (ch:dash-marker)
@@ -117,9 +118,9 @@
     "function draw(){var q=document.getElementById('q').value.toLowerCase();"
     "var t=0,h='';R.forEach(function(r){if(q&&r.join(' ').toLowerCase().indexOf(q)<0)return;"
     "t+=r[i('active')];h+='<tr><td>'+r[i('date')]+'</td><td>'+r[i('user')]+'</td><td>'+r[i('job')]"
-    "+'</td><td>'+r[i('task')]+'</td><td>'+r[i('dwg')]+'</td><td class=\"n\">'+hm(r[i('active')])"
-    "+'</td><td>'+r[i('status')]+'</td></tr>'});"
-    "h+='<tr><th>TOTAL</th><th></th><th></th><th></th><th></th><th class=\"n\">'+hm(t)+'</th><th></th></tr>';"
+    "+'</td><td>'+r[i('manager')]+'</td><td>'+r[i('task')]+'</td><td>'+r[i('dwg')]"
+    "+'</td><td class=\"n\">'+hm(r[i('active')])+'</td><td>'+r[i('status')]+'</td></tr>'});"
+    "h+='<tr><th>TOTAL</th><th></th><th></th><th></th><th></th><th></th><th class=\"n\">'+hm(t)+'</th><th></th></tr>';"
     "document.getElementById('b').innerHTML=h}"
     "document.getElementById('q').addEventListener('input',draw);draw();"
     "</script>"

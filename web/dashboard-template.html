@@ -109,18 +109,21 @@
       <input id="q" placeholder="user, job, drawing, note&hellip;"></div>
     <div class="fld"><label for="fuser">User</label><select id="fuser"></select></div>
     <div class="fld"><label for="fjob">Job</label><select id="fjob"></select></div>
+    <div class="fld"><label for="fmgr">Manager</label><select id="fmgr"></select></div>
     <div class="fld"><label for="from">From</label><input id="from" type="date"></div>
     <div class="fld"><label for="to">To</label><input id="to" type="date"></div>
     <div class="fld"><label for="grp">Group by</label>
       <select id="grp">
         <option value="job">Job</option>
         <option value="user">User</option>
+        <option value="manager">Manager</option>
         <option value="date">Day</option>
         <option value="week">Week</option>
         <option value="month">Month</option>
         <option value="dwg">Drawing</option>
         <option value="task">Task / phase</option>
         <option value="job|user">Job + User</option>
+        <option value="manager|job">Manager + Job</option>
         <option value="user|date">User + Day</option>
       </select></div>
     <button class="ghost" id="reset" type="button">Reset</button>
@@ -160,6 +163,7 @@
       <th data-k="end">End</th>
       <th data-k="user">User</th>
       <th data-k="job">Job</th>
+      <th data-k="manager">Manager</th>
       <th data-k="task">Task</th>
       <th data-k="dwg">Drawing</th>
       <th class="n" data-k="active">Hours</th>
@@ -216,8 +220,9 @@
   var ROWS = CADHOURS.rows.map(function (r) {
     var o = {};
     COLS.forEach(function (c, i) { o[c] = r[i]; });
-    o.active = +o.active || 0;
-    o.idle   = +o.idle   || 0;
+    o.active  = +o.active || 0;
+    o.idle    = +o.idle   || 0;
+    o.manager = o.manager || "";     // rows logged before managers existed
     return o;
   });
 
@@ -251,6 +256,7 @@
 
   fillSelect($("fuser"), uniq("user"), "Everyone");
   fillSelect($("fjob"),  uniq("job"),  "All jobs");
+  fillSelect($("fmgr"),  uniq("manager"), "All managers");
 
   $("meta").innerHTML =
     esc(CADHOURS.from) + " to " + esc(CADHOURS.to) +
@@ -262,16 +268,18 @@
 
   function current() {
     var q = $("q").value.trim().toLowerCase(),
-        u = $("fuser").value, j = $("fjob").value,
+        u = $("fuser").value, j = $("fjob").value, g = $("fmgr").value,
         f = $("from").value, t = $("to").value;
     return ROWS.filter(function (r) {
       if (u && r.user !== u) return false;
       if (j && r.job !== j) return false;
+      if (g && r.manager !== g) return false;
       if (f && r.date < f) return false;
       if (t && r.date > t) return false;
       if (q) {
-        var hay = (r.user + " " + r.job + " " + r.task + " " + r.dwg + " " +
-                   r.path + " " + r.date + " " + r.notes + " " + r.machine).toLowerCase();
+        var hay = (r.user + " " + r.job + " " + r.manager + " " + r.task + " " +
+                   r.dwg + " " + r.path + " " + r.date + " " + r.notes + " " +
+                   r.machine).toLowerCase();
         if (hay.indexOf(q) < 0) return false;
       }
       return true;
@@ -354,6 +362,7 @@
       ["Sessions", rows.length + (running ? " <span class='pill run'>" + running + " running</span>" : "")],
       ["People", uniqCount(rows, "user")],
       ["Jobs", uniqCount(rows, "job")],
+      ["Managers", uniqCount(rows, "manager")],
       ["Drawings", uniqCount(rows, "dwg")],
       ["Days worked", days],
       ["Avg per day", days ? hhmm(total / days) : "0:00"],
@@ -387,6 +396,7 @@
              "<td>" + esc(r.end.slice(11, 16)) + "</td>" +
              "<td>" + esc(r.user) + "</td>" +
              "<td>" + esc(r.job) + "</td>" +
+             "<td>" + esc(r.manager) + "</td>" +
              "<td>" + esc(r.task) + "</td>" +
              '<td title="' + esc(r.path) + '">' + esc(r.dwg) + "</td>" +
              '<td class="n">' + hhmm(r.active) + "</td>" +
@@ -436,11 +446,11 @@
     renderDetail(rows);
   }
 
-  ["q", "fuser", "fjob", "from", "to", "grp"].forEach(function (id) {
+  ["q", "fuser", "fjob", "fmgr", "from", "to", "grp"].forEach(function (id) {
     $(id).addEventListener(id === "q" ? "input" : "change", draw);
   });
   $("reset").addEventListener("click", function () {
-    ["q", "fuser", "fjob", "from", "to"].forEach(function (id) { $(id).value = ""; });
+    ["q", "fuser", "fjob", "fmgr", "from", "to"].forEach(function (id) { $(id).value = ""; });
     draw();
   });
 

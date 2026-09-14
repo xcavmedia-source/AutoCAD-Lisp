@@ -47,6 +47,13 @@ copy /y "%HERE%CADHours.bundle\PackageContents.xml" "%BUNDLE%\" >nul || goto :fa
 copy /y "%ROOT%\src\*.lsp"                          "%CONTENTS%\" >nul || goto :failed
 copy /y "%ROOT%\web\dashboard-template.html"        "%CONTENTS%\" >nul || goto :failed
 
+rem never overwrite the manager list the site maintains
+if exist "%CONTENTS%\managers.txt" (
+  echo  keeping the existing managers.txt
+) else (
+  copy /y "%HERE%managers.txt" "%CONTENTS%\" >nul || goto :failed
+)
+
 rem never overwrite a config the site has already edited
 if exist "%CONTENTS%\cadhours.ini" (
   echo  keeping the existing cadhours.ini

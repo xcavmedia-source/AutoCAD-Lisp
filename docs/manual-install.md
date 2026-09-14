@@ -64,7 +64,7 @@ hours get logged at all.
 
 ## A3. Copy the tracker files in
 
-Into `F:\0000-Drafting\21-CADHours\`, copy these eight files, flat, no sub-folders:
+Into `F:\0000-Drafting\21-CADHours\`, copy these nine files, flat, no sub-folders:
 
 ```
 from src\      CADHours.lsp
@@ -75,6 +75,7 @@ from src\      CADHours.lsp
                CADHours-Dashboard.lsp
 from web\      dashboard-template.html
 from install\  cadhours.ini
+               managers.txt
 ```
 
 The folder should look exactly like this when you are done:
@@ -88,7 +89,8 @@ F:\0000-Drafting\21-CADHours\
 ├─ CADHours-Report.lsp
 ├─ CADHours-Session.lsp
 ├─ cadhours.ini
-└─ dashboard-template.html
+├─ dashboard-template.html
+└─ managers.txt
 ```
 
 ## A4. Point the logging at the shared folder
@@ -114,7 +116,26 @@ Two things to check:
   source, so `F:\0000-Drafting\22-CADHoursData` is read exactly as written.
   Only the path inside `acaddoc.lsp` needs forward slashes.
 
-While you are in there, confirm the job number format is right:
+### A4b. Add your project managers
+
+Open `F:\0000-Drafting\21-CADHours\managers.txt` and put one name per line:
+
+```
+David Cruz
+Karen Webb
+Tom Lindqvist
+```
+
+Those names fill the drop-down on the pop-up. Write each one exactly as you
+want it to read in reports — the text is what gets logged, so "Dave Cruz" and
+"David Cruz" would count as two different managers.
+
+You can edit this file whenever you like. It is re-read each time the pop-up
+opens, so a change shows up on the next drawing anyone opens, with no restart.
+
+### A4c. Check the job number format
+
+Confirm the job number format is right:
 
 ```ini
 JobPattern         = P#####
@@ -283,8 +304,8 @@ Two cautions:
 
 - **AutoCAD holds the files open while running.** Do the swap when nobody has
   AutoCAD open, or the copy will be refused.
-- **Do not overwrite `cadhours.ini`** — that is your settings file, not part of
-  the program.
+- **Do not overwrite `cadhours.ini` or `managers.txt`** — those are yours, not
+  part of the program.
 
 Changing a setting for the whole office is the same idea: edit
 `F:\0000-Drafting\21-CADHours\cadhours.ini`, and everyone picks it up on their next
@@ -299,7 +320,7 @@ not load and nothing is tracked while it is away.
 
 If that matters, give the laptop a local copy as well:
 
-1. Copy the eight files from `F:\0000-Drafting\21-CADHours\` to `C:\CAD\CADHours\` on
+1. Copy the nine files from `F:\0000-Drafting\21-CADHours\` to `C:\CAD\CADHours\` on
    the laptop.
 2. Edit **the local copy's** `cadhours.ini` and set:
 

@@ -518,11 +518,43 @@
 
 ;;; ---- file writing ------------------------------------------------
 
+;;; First line of PATH, or nil.  Cheap: opens, reads one line, closes.
+(defun ch:first-line (path / f ln)
+  (if (and path (findfile path) (setq f (open path "r")))
+    (progn (setq ln (read-line f)) (close f) ln)
+  )
+)
+
+;;; Bring an existing file's header up to date.
+;;;
+;;; Columns are only ever appended, never reordered, so rows written
+;;; under an older header still line up - they simply run out of fields
+;;; early and read as empty.  The header itself has to be corrected
+;;; though, or the file opens in Excel with an unnamed column.
+(defun ch:fix-header (path header / lines f ln)
+  (if (and header
+           (setq lines (ch:read-lines path))
+           (/= (car lines) header)
+           (= (substr (car lines) 1 12) "\"session_id\""))
+    (if (setq f (open path "w"))
+      (progn
+        (write-line header f)
+        (foreach ln (cdr lines) (write-line ln f))
+        (close f)
+        T
+      )
+    )
+  )
+)
+
 ;;; Append LINE to PATH, creating the file with HEADER when it does
 ;;; not exist yet.  Returns T on success.
 (defun ch:append-line (path line header / f new)
   (ch:mkpath (vl-filename-directory path))
   (setq new (null (findfile path)))
+  (if (and (not new) header (/= (ch:str (ch:first-line path)) header))
+    (ch:safe 'ch:fix-header (list path header))
+  )
   (if (setq f (open path "a"))
     (progn
       (if (and new header) (write-line header f))
@@ -622,6 +654,9 @@
     (cons "JobPattern"         "*")
     (cons "JobPatternHint"     "")
     (cons "JobFromPath"        "1")
+    (cons "ManagerFile"        "")
+    (cons "RequireManager"     "0")
+    (cons "NoteLines"          "4")
     (cons "DefaultJob"         "")
     (cons "RememberJobInDwg"   "1")
     (cons "WriteEventLog"      "1")
@@ -820,6 +855,90 @@
   (setq m (getenv "COMPUTERNAME"))
   (if (or (null m) (= m "")) (setq m "unknown"))
   (strcase m)
+)
+
+
+;;; ---- project managers -------------------------------------------------
+;;;
+;;; A plain list, one name per line, that the CAD manager owns.  It is
+;;; re-read every time the pop-up opens, so adding or removing a name
+;;; takes effect on the next drawing without restarting AutoCAD.
+
+(defun ch:manager-file ( / cfg)
+  (setq cfg (ch:cfg-path "ManagerFile"))
+  (cond
+    ((and (/= cfg "") (findfile cfg)) cfg)
+    ((and (ch:home) (findfile (ch:path+ (ch:home) "managers.txt")))
+      (ch:path+ (ch:home) "managers.txt"))
+    ((findfile "managers.txt") (findfile "managers.txt"))
+  )
+)
+
+;;; Names from the list file, in file order, comments and blanks gone
+(defun ch:managers ( / file out ln)
+  (if (setq file (ch:manager-file))
+    (progn
+      (foreach ln (ch:read-lines file)
+        (setq ln (ch:trim ln))
+        (if (and (/= ln "")
+                 (/= (substr ln 1 1) ";")
+                 (/= (substr ln 1 1) "#"))
+          (setq out (cons ln out))
+        )
+      )
+      (reverse out)
+    )
+  )
+)
+
+;;; Is NAME on the list?  Matching ignores case so a typed name still
+;;; lines up with the list for reporting.
+(defun ch:known-manager (name / hit m)
+  (setq name (strcase (ch:trim name)))
+  (foreach m (ch:managers)
+    (if (and (null hit) (= (strcase m) name)) (setq hit m))
+  )
+  hit
+)
+
+
+;;; ---- remembering the manager per job ----------------------------------
+;;;
+;;; A manager belongs to a job, not to a drawing, so the answer is kept
+;;; against the job number and offered again the next time anyone in
+;;; this profile opens a drawing on it.
+
+(defun ch:job-key () "HKEY_CURRENT_USER\\Software\\CADHours\\Jobs")
+
+(defun ch:job-mgr-remember (job mgr)
+  (if (and job (/= (ch:trim job) "") mgr (/= (ch:trim mgr) ""))
+    (vl-catch-all-apply 'vl-registry-write
+      (list (ch:job-key) (strcase (ch:trim job)) (ch:trim mgr)))
+  )
+  (princ)
+)
+
+(defun ch:job-mgr-recall (job / v)
+  (if (and job (/= (ch:trim job) ""))
+    (progn
+      (setq v (vl-catch-all-apply 'vl-registry-read
+                (list (ch:job-key) (strcase (ch:trim job)))))
+      (if (and (not (vl-catch-all-error-p v)) v (/= v "")) v)
+    )
+  )
+)
+
+(defun ch:mgr-last ( / v)
+  (setq v (vl-registry-read (ch:mru-key) "LastManager"))
+  (if v v "")
+)
+
+(defun ch:mgr-remember-last (mgr)
+  (if (and mgr (/= (ch:trim mgr) ""))
+    (vl-catch-all-apply 'vl-registry-write
+      (list (ch:mru-key) "LastManager" (ch:trim mgr)))
+  )
+  (princ)
 )
 
 

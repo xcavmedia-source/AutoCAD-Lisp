@@ -28,7 +28,8 @@
       *ch-col-end*    9  *ch-col-date*  10  *ch-col-week*  11
       *ch-col-month* 12  *ch-col-asec*  13  *ch-col-isec*  14
       *ch-col-wsec*  15  *ch-col-ahrs*  16  *ch-col-saves* 17
-      *ch-col-cmds*  18  *ch-col-notes* 19  *ch-col-ver*   20)
+      *ch-col-cmds*  18  *ch-col-notes* 19  *ch-col-ver*   20
+      *ch-col-mgr*   21)
 
 (defun ch:r-user  (r) (ch:fld r *ch-col-user*))
 (defun ch:r-job   (r) (ch:fld r *ch-col-job*))
@@ -39,6 +40,7 @@
 (defun ch:r-dwg   (r) (ch:fld r *ch-col-dname*))
 (defun ch:r-path  (r) (ch:fld r *ch-col-dpath*))
 (defun ch:r-stat  (r) (ch:fld r *ch-col-status*))
+(defun ch:r-mgr   (r) (ch:fld r *ch-col-mgr*))
 
 ;;; Billed seconds as a number
 (defun ch:r-secs (r / v)
@@ -158,15 +160,18 @@
   )
 )
 
-;;; Filter loaded rows.  SPEC is an alist of "user" / "job" / "dwg".
-(defun ch:filter (rows spec / u j d)
+;;; Filter loaded rows.  SPEC is an alist of "user" / "job" / "dwg" /
+;;; "mgr", any of which may be absent or a wildcard.
+(defun ch:filter (rows spec / u j d m)
   (setq u (cdr (assoc "user" spec))
         j (cdr (assoc "job"  spec))
-        d (cdr (assoc "dwg"  spec)))
+        d (cdr (assoc "dwg"  spec))
+        m (cdr (assoc "mgr"  spec)))
   (vl-remove-if-not
     '(lambda (r)
        (and (ch:match (ch:r-user r) (if u u "*"))
             (ch:match (ch:r-job  r) (if j j "*"))
+            (ch:match (ch:r-mgr  r) (if m m "*"))
             (or (ch:match (ch:r-dwg r) (if d d "*"))
                 (ch:match (ch:r-path r) (if d d "*")))))
     rows)
@@ -367,8 +372,9 @@
   (if (null rows)
     (princ "\n No time recorded against that job yet.")
     (progn
-      (ch:print-group "User"  (ch:group rows 'ch:r-user))
-      (ch:print-group "Month" (ch:group-sorted rows 'ch:r-month))
+      (ch:print-group "User"    (ch:group rows 'ch:r-user))
+      (ch:print-group "Manager" (ch:group rows 'ch:r-mgr))
+      (ch:print-group "Month"   (ch:group-sorted rows 'ch:r-month))
       (ch:print-group "Drawing" (ch:group rows 'ch:r-dwg))
     )
   )
@@ -418,8 +424,8 @@
   (setq job (ch:trim (getstring T "\nJob number <*>: ")))
   (if (= job "") (setq job "*"))
 
-  (initget "Job User Day Week Month Drawing Task")
-  (setq grp (getkword "\nGroup by [Job/User/Day/Week/Month/Drawing/Task] <Job>: "))
+  (initget "Job User Manager Day Week Month Drawing Task")
+  (setq grp (getkword "\nGroup by [Job/User/Manager/Day/Week/Month/Drawing/Task] <Job>: "))
   (if (null grp) (setq grp "Job"))
 
   (setq rows (ch:filter (ch:load-rows (car rng) (cadr rng))
@@ -429,6 +435,7 @@
     (cond
       ((= grp "Job")     (setq label "Job")     (ch:group rows 'ch:r-job))
       ((= grp "User")    (setq label "User")    (ch:group rows 'ch:r-user))
+      ((= grp "Manager") (setq label "Manager") (ch:group rows 'ch:r-mgr))
       ((= grp "Day")     (setq label "Day")     (ch:group-sorted rows 'ch:r-date))
       ((= grp "Week")    (setq label "Week")    (ch:group-sorted rows 'ch:r-week))
       ((= grp "Month")   (setq label "Month")   (ch:group-sorted rows 'ch:r-month))
