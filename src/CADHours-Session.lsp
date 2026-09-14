@@ -356,7 +356,12 @@
       (setq end-parts      (ch:parts)
             *ch-last-parts* end-parts)
       (ch:write-live)
-      (setq *ch-active* nil)
+      ;; the session is over, so there is nothing left to ask about.
+      ;; Without this, a drawing whose prompt was skipped keeps nagging
+      ;; after it has been closed - the CLOSE command itself raises a
+      ;; commandEnded, which is what brings the pop-up back.
+      (setq *ch-active*      nil
+            *ch-prompt-due*  nil)
       (ch:log-event "SESSION_END" status)
       (if (>= *ch-acc* (float (ch:cfg-int "MinSessionSeconds" 10)))
         (if (ch:commit-session status end-parts)
@@ -707,6 +712,8 @@
   moved
 )
 
+
+(ch:module "Session" "1.1.0")
 
 (princ)
 ;;; ============================================================ EOF

@@ -13,7 +13,36 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.0.0")
+(setq *ch-version* "1.1.0")
+
+
+;;; ---- module registry ---------------------------------------------------
+;;;
+;;; Each module stamps its own version as it loads.  Copying the files
+;;; between machines by hand makes it easy to end up with a stale one,
+;;; and the symptom of that is a command that has simply vanished - so
+;;; the loader checks the stamps and says which file is behind rather
+;;; than leaving it to be guessed.
+
+(defun ch:module (name ver)
+  (setq *ch-modules*
+        (cons (cons name ver)
+              (vl-remove-if '(lambda (p) (= (car p) name)) *ch-modules*)))
+  (princ)
+)
+
+;;; Returns (missing-names wrong-version-names) against *ch-version*
+(defun ch:module-report ( / hit missing bad n)
+  (foreach n '("Core" "Session" "Job" "Report" "Dashboard")
+    (setq hit (assoc n *ch-modules*))
+    (cond
+      ((null hit) (setq missing (cons n missing)))
+      ((/= (cdr hit) *ch-version*)
+        (setq bad (cons (strcat n " is " (cdr hit)) bad)))
+    )
+  )
+  (list (reverse missing) (reverse bad))
+)
 
 
 ;;; ---- debug / console -------------------------------------------
@@ -649,6 +678,7 @@
     (cons "HeartbeatSeconds"   "60")
     (cons "MinSessionSeconds"  "10")
     (cons "PromptOnOpen"       "1")
+    (cons "PromptOnUnsaved"    "1")
     (cons "RequireJobNumber"   "1")
     (cons "RepromptSeconds"    "120")
     (cons "JobPattern"         "*")
@@ -981,6 +1011,8 @@
   (if v v "")
 )
 
+
+(ch:module "Core" "1.1.0")
 
 (princ)
 ;;; ============================================================ EOF

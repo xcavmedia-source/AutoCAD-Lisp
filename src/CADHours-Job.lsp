@@ -697,9 +697,12 @@
 )
 
 ;;; Called after every command ends.  Nags for a job number, but only
-;;; every RepromptSeconds so it never becomes unusable.
+;;; while a session is genuinely running in the drawing the user is
+;;; looking at, and only every RepromptSeconds, so it can never become
+;;; a pop-up that follows them around.
 (defun ch:maybe-reprompt ()
   (if (and *ch-prompt-due*
+           *ch-active*
            (not *ch-in-dialog*)
            *ch-current*
            (ch:cfg-bool "RequireJobNumber" T)
@@ -710,6 +713,8 @@
   (princ)
 )
 
+
+(ch:module "Job" "1.1.0")
 
 (princ)
 ;;; ============================================================ EOF

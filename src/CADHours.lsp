@@ -102,6 +102,28 @@
   )
 )
 
+;;; Compare what actually loaded against this version and complain by
+;;; name if anything is behind.  A hand-copied deployment makes a stale
+;;; file easy to end up with, and the symptom is a command that has
+;;; quietly disappeared.
+(defun ch:boot-check ( / rep)
+  (setq rep (ch:module-report))
+  (if (or (car rep) (cadr rep))
+    (progn
+      (princ "\n** CADHours: the files in the install folder do not match.")
+      (if (car rep)
+        (princ (strcat "\n   Not loaded : " (ch:join (car rep) ", "))))
+      (if (cadr rep)
+        (princ (strcat "\n   Out of date: " (ch:join (cadr rep) ", ")
+                       "   (expected " *ch-version* ")")))
+      (princ "\n   Copy the whole set of .lsp files again, with AutoCAD closed.")
+      (princ "\n   CHCONFIG lists them.")
+      nil
+    )
+    T
+  )
+)
+
 
 ;;; ---- per-drawing start-up ------------------------------------------
 
@@ -128,7 +150,14 @@
                         (ch:cfg-path "LocalSpool")))
       )
 
-      (if (ch:cfg-bool "PromptOnOpen" T)
+      ;; A never-saved drawing may be one AutoCAD created by itself -
+      ;; closing the last file can leave a fresh Drawing1 behind - and
+      ;; asking which job that belongs to is a question nobody wants.
+      ;; With PromptOnUnsaved = 0 it is tracked quietly and the question
+      ;; waits until the user actually does something.
+      (if (and (ch:cfg-bool "PromptOnOpen" T)
+               (or (ch:cfg-bool "PromptOnUnsaved" T)
+                   (/= (getvar "DWGTITLED") 0)))
         (ch:begin-with-prompt)
         (ch:begin-silently)
       )
@@ -272,10 +301,21 @@
   (princ)
 )
 
-(defun c:CHCONFIG ( / file k)
+(defun c:CHCONFIG ( / file k hit)
   (ch:cfg-load)
   (setq file (ch:cfg-file))
   (ch:hdr "CAD Hours - settings")
+  (princ (strcat "\n  Version      : " *ch-version*))
+  (princ "\n  Modules      : ")
+  (foreach k '("Core" "Session" "Job" "Report" "Dashboard")
+    (setq hit (assoc k *ch-modules*))
+    (princ (strcat "\n    " (ch:rpad k 12)
+                   (cond
+                     ((null hit) "NOT LOADED")
+                     ((/= (cdr hit) *ch-version*)
+                       (strcat (cdr hit) "  <- OUT OF DATE"))
+                     (T (cdr hit)))))
+  )
   (princ (strcat "\n  Config file  : " (if file file "(none - built-in defaults)")))
   (princ (strcat "\n  Install home : " (if (ch:home) (ch:home) "(unknown)")))
   (princ (strcat "\n  Log root     : " (ch:cfg-path "LogRoot")
@@ -389,8 +429,10 @@
     )
 
     (ch:install-boot-guard)
-    (princ (strcat "\nCAD Hours Tracker " *ch-version*
-                   " loaded.  Type CADHOURS for the command list."))
+    (if (ch:boot-check)
+      (princ (strcat "\nCAD Hours Tracker " *ch-version*
+                     " loaded.  Type CADHOURS for the command list."))
+    )
   )
 )
 
