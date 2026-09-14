@@ -310,7 +310,7 @@
                  (if (ch:manager-file) (ch:manager-file) "(not found)")))
   (princ (strcat "\n  Names loaded : " (itoa (length mgrs))
                  (if mgrs (strcat "  -> " (ch:join mgrs ", ")) "")))
-  (princ (strcat "\n  Note lines   : " (itoa (ch:note-lines))))
+  (princ (strcat "\n  Notes panel  : " (itoa (ch:note-height)) " rows visible"))
   (princ (strcat "\n  UseDialog    : " (if (ch:cfg-bool "UseDialog" T) "1" "0")))
   (princ "\n\n  Opening the pop-up.  Fill it in and press OK, or press Skip.")
 

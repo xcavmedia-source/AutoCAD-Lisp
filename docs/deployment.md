@@ -93,7 +93,7 @@ The settings worth thinking about before you roll out:
 | `MinSessionSeconds` | `10` | Stops "opened it to look at something" from filling the database. |
 | `ManagerFile` | *(blank)* | Blank means `managers.txt` beside `cadhours.ini`. Point it at the data folder if you want the list editable without touching the read-only program folder. |
 | `RequireManager` | `0` | Set to `1` to insist a manager is chosen before the pop-up closes. |
-| `NoteLines` | `4` | Lines in the notes area, 1 to 8. |
+| `NoteLines` | `4` | Visible rows of the notes panel, 2 to 12. The note length is unlimited either way — the panel scrolls. Lower it if the dialog is too tall for the screen. |
 
 ### `JobPattern` is already set to `P#####`
 

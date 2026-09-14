@@ -39,7 +39,7 @@ Every session writes one row:
 | **Billed time** | seconds actually worked, idle excluded |
 | **Idle time** | what was discarded, so the numbers are auditable |
 | **Saves and commands** | how busy the session was |
-| **Notes** | free text, four lines' worth |
+| **Notes** | free text of any length, typed inline or in Notepad |
 
 ---
 

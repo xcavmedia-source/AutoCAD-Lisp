@@ -657,7 +657,7 @@
     (cons "UseDialog"          "1")
     (cons "ManagerFile"        "")
     (cons "RequireManager"     "0")
-    (cons "NoteLines"          "3")
+    (cons "NoteLines"          "4")
     (cons "DefaultJob"         "")
     (cons "RememberJobInDwg"   "1")
     (cons "WriteEventLog"      "1")

@@ -223,14 +223,27 @@
 )
 
 
-(defun ch:note-lines ()
-  (max 1 (min 8 (ch:cfg-int "NoteLines" 3)))
+;;; ---- the notes panel ----------------------------------------------------
+;;;
+;;; DCL has no multi-line edit tile; it is simply not in the tile set, and
+;;; adding one would mean .NET and an installer.  What DCL does have is a
+;;; list_box, which is a single framed panel that scrolls - so the note is
+;;; shown there as wrapped lines, which reads as one large box rather than
+;;; a stack of separate fields.
+;;;
+;;; Typing goes through the line below it (Enter appends), and the
+;;; Notepad button hands the whole note to a real text editor for
+;;; anything substantial.  The note itself is held in *ch-note-lines*
+;;; while the dialog is up; the list_box is only the view of it.
+
+(defun ch:note-height ()
+  (max 2 (min 12 (ch:cfg-int "NoteLines" 4)))
 )
 
-(defun ch:note-width () 200)
+(defun ch:note-width () 76)
 
-;;; Spread TEXT over COUNT boxes, breaking on spaces.  Anything past the
-;;; last box is crammed into it rather than dropped.
+;;; Break TEXT into display lines of at most WIDTH, on spaces.  COUNT
+;;; caps the number of lines; anything past it is crammed into the last.
 (defun ch:wrap-note (text count width / words out line w n)
   (setq words (ch:split (ch:trim (ch:str text)) " ")
         out   '()
@@ -246,8 +259,7 @@
   )
   (if (/= line "") (setq out (cons line out)))
   (setq out (reverse out))
-  ;; more lines than boxes: join the tail into the last box
-  (if (> (length out) count)
+  (if (and count (> (length out) count))
     (progn
       (setq n    (- count 1)
             line (ch:join (ch:nthcdr n out) " ")
@@ -271,59 +283,169 @@
   lst
 )
 
-;;; DCL source for the pop-up, built at run time so the number of note
-;;; boxes can follow the NoteLines setting.  It is written to a
-;;; temporary file, so the tracker does not depend on AutoCAD's support
-;;; file search path finding a .dcl.
-;;;
-;;; DCL has no multi-line text tile - it is simply not in the tile set -
-;;; so a long note is taken across several stacked edit boxes and joined
-;;; back into one value on OK.
-(defun ch:dcl-source ( / out i)
-  (setq out
-    (list
-      "cadhours_job : dialog {"
-      "  label = \"CAD Hours Tracker\";"
-      "  : text { key = \"dwgname\"; width = 64; }"
-      "  : text { key = \"dwgpath\"; width = 64; }"
-      "  : spacer { height = 0.2; }"
-      "  : boxed_column {"
-      "    label = \"Charge this time to\";"
-      "    : edit_box   { key = \"job\";     label = \"&Job number:\";      edit_width = 26; edit_limit = 64; allow_accept = true; }"
-      "    : popup_list { key = \"recent\";  label = \"&Recent jobs:\";     edit_width = 26; }"
-      "    : popup_list { key = \"manager\"; label = \"Project &manager:\"; edit_width = 26; }"
-      "    : edit_box   { key = \"task\";    label = \"&Task / phase:\";    edit_width = 26; edit_limit = 64; }"
-      "    : text { key = \"hint\"; width = 64; }"
-      "  }"
-      "  : boxed_column {"
-      "    label = \"Notes (optional)\";"
-    ))
-  (setq i 0)
-  (repeat (ch:note-lines)
-    (setq out (append out
-      (list (strcat "    : edit_box { key = \"n" (itoa i)
-                    "\"; edit_width = 62; edit_limit = 250; }"))))
-    (setq i (1+ i))
+;;; The note as one value, which is what gets logged
+(defun ch:note-text ()
+  (ch:join (vl-remove "" *ch-note-lines*) " ")
+)
+
+;;; Repaint the panel from *ch-note-lines*
+(defun ch:note-refresh ( / ln)
+  (vl-catch-all-apply
+    '(lambda ()
+       (start_list "notelist")
+       (if *ch-note-lines*
+         (foreach ln *ch-note-lines* (add_list ln))
+         (add_list "")
+       )
+       (end_list))
+    nil)
+  (princ)
+)
+
+;;; Load TEXT into the panel, wrapped
+(defun ch:note-load (text)
+  (setq *ch-note-lines* (ch:wrap-note text nil (ch:note-width)))
+  (ch:note-refresh)
+  (princ)
+)
+
+;;; Enter in the add line, or focus leaving it, appends what was typed
+(defun ch:dlg-note-add ( / v)
+  (setq v (ch:trim (ch:tile-get "noteadd")))
+  (if (/= v "")
+    (progn
+      (setq *ch-note-lines*
+            (ch:wrap-note (ch:trim (strcat (ch:note-text) " " v))
+                          nil (ch:note-width)))
+      (ch:tile-set "noteadd" "")
+      (ch:note-refresh)
+    )
   )
-  (append out
-    (list
-      "  }"
-      "  : errtile { width = 64; }"
-      "  : row {"
-      "    : spacer { width = 1; }"
-      "    : button { key = \"accept\"; label = \"  OK  \"; is_default = true; width = 14; fixed_width = true; }"
-      "    : button { key = \"cancel\"; label = \" Skip \"; is_cancel = true; width = 14; fixed_width = true; }"
-      "    : spacer { width = 1; }"
-      "  }"
-      "}"
-    ))
+  (princ)
+)
+
+;;; Clicking a line lifts it out of the note and into the add box, so it
+;;; can be corrected and put back
+(defun ch:dlg-note-pick (idx / n out i ln)
+  (setq n (atoi (ch:str idx)) i 0 out '())
+  (if (and *ch-note-lines* (< n (length *ch-note-lines*)))
+    (progn
+      (ch:tile-set "noteadd" (nth n *ch-note-lines*))
+      (foreach ln *ch-note-lines*
+        (if (/= i n) (setq out (cons ln out)))
+        (setq i (1+ i))
+      )
+      (setq *ch-note-lines* (reverse out))
+      (ch:note-refresh)
+      (ch:tile-mode "noteadd" 2)
+    )
+  )
+  (princ)
+)
+
+(defun ch:dlg-note-clear ()
+  (setq *ch-note-lines* nil)
+  (ch:tile-set "noteadd" "")
+  (ch:note-refresh)
+  (princ)
+)
+
+;;; Notepad button: remember what is on screen and close with code 3, so
+;;; the caller can run the editor and bring the dialog straight back.
+(defun ch:dlg-notepad ()
+  (ch:dlg-note-add)
+  (setq *ch-dlg-job*   (ch:trim (ch:tile-get "job"))
+        *ch-dlg-task*  (ch:trim (ch:tile-get "task"))
+        *ch-dlg-mgr*   (ch:read-manager)
+        *ch-dlg-notes* (ch:note-text))
+  (done_dialog 3)
+  (princ)
+)
+
+;;; Hand TEXT to Notepad and return whatever comes back.
+;;;
+;;; WScript.Shell's Run waits for the editor to close when asked to, so
+;;; the note can be read straight back.  Without it there is no way to
+;;; wait, so the user is asked to confirm at the command line instead.
+(defun ch:notepad-edit (text / path f sh r lines ln)
+  (setq path (vl-filename-mktemp "cadnote" nil ".txt"))
+  (if (setq f (open path "w"))
+    (progn
+      (foreach ln (ch:wrap-note text nil 76) (write-line ln f))
+      (if (= (ch:trim (ch:str text)) "") (write-line "" f))
+      (close f)
+
+      (setq sh (vl-catch-all-apply 'vlax-create-object (list "WScript.Shell")))
+      (if (vl-catch-all-error-p sh)
+        (setq r (vl-catch-all-error-p sh))
+        (progn
+          (setq r (vl-catch-all-apply 'vlax-invoke
+                    (list sh 'Run (strcat "notepad.exe \"" path "\"") 1 :vlax-true)))
+          (vl-catch-all-apply 'vlax-release-object (list sh))
+          (setq r (vl-catch-all-error-p r))
+        )
+      )
+      ;; could not wait for the editor - ask the user to tell us instead
+      (if r
+        (progn
+          (startapp "notepad.exe" path)
+          (getstring "\nType the notes in Notepad, save and close it, then press Enter: ")
+        )
+      )
+
+      (setq lines (ch:read-lines path))
+      (vl-file-delete path)
+      (ch:join (vl-remove "" (mapcar 'ch:trim (if lines lines '()))) " ")
+    )
+    text
+  )
+)
+
+
+;;; ---- the dialog definition ----------------------------------------------
+
+(defun ch:dcl-source ()
+  (list
+    "cadhours_job : dialog {"
+    "  label = \"CAD Hours Tracker\";"
+    "  : text { key = \"dwgname\"; width = 64; }"
+    "  : text { key = \"dwgpath\"; width = 64; }"
+    "  : spacer { height = 0.2; }"
+    "  : boxed_column {"
+    "    label = \"Charge this time to\";"
+    "    : edit_box   { key = \"job\";     label = \"&Job number:\";      edit_width = 26; edit_limit = 64; allow_accept = true; }"
+    "    : popup_list { key = \"recent\";  label = \"&Recent jobs:\";     edit_width = 26; }"
+    "    : popup_list { key = \"manager\"; label = \"Project &manager:\"; edit_width = 26; }"
+    "    : edit_box   { key = \"task\";    label = \"&Task / phase:\";    edit_width = 26; edit_limit = 64; }"
+    "    : text { key = \"hint\"; width = 64; }"
+    "  }"
+    "  : boxed_column {"
+    "    label = \"Notes (optional)\";"
+    (strcat "    : list_box { key = \"notelist\"; width = 62; height = "
+            (itoa (ch:note-height)) "; }")
+    "    : row {"
+    "      : edit_box { key = \"noteadd\"; label = \"Add:\"; edit_width = 34; edit_limit = 250; }"
+    "      : button { key = \"notepad\"; label = \" &Notepad... \"; fixed_width = true; }"
+    "      : button { key = \"noteclear\"; label = \" Clear \"; fixed_width = true; }"
+    "    }"
+    "    : text { label = \"  Type a line and press Enter, or use Notepad for a long note.  Click a line to edit it.\"; }"
+    "  }"
+    "  : errtile { width = 64; }"
+    "  : row {"
+    "    : spacer { width = 1; }"
+    "    : button { key = \"accept\"; label = \"  OK  \"; is_default = true; width = 14; fixed_width = true; }"
+    "    : button { key = \"cancel\"; label = \" Skip \"; is_cancel = true; width = 14; fixed_width = true; }"
+    "    : spacer { width = 1; }"
+    "  }"
+    "}"
+  )
 )
 
 ;;; Write the DCL to a temp file and return its path.  Rebuilt whenever
-;;; the note-line count changes.
+;;; the panel height changes.
 (defun ch:dcl-file ( / path f ln)
   (if (and *ch-dcl-path* (findfile *ch-dcl-path*)
-           (equal *ch-dcl-lines* (ch:note-lines)))
+           (equal *ch-dcl-lines* (ch:note-height)))
     *ch-dcl-path*
     (progn
       (setq path (vl-filename-mktemp "cadhours" nil ".dcl"))
@@ -331,7 +453,7 @@
         (progn
           (foreach ln (ch:dcl-source) (write-line ln f))
           (close f)
-          (setq *ch-dcl-lines* (ch:note-lines))
+          (setq *ch-dcl-lines* (ch:note-height))
           (setq *ch-dcl-path* path)
           (ch:dbg (strcat "dialog definition written to " path))
           *ch-dcl-path*
@@ -339,17 +461,6 @@
       )
     )
   )
-)
-
-;;; Collect the note boxes into one value
-(defun ch:read-notes ( / i out v)
-  (setq i 0 out '())
-  (repeat (ch:note-lines)
-    (setq v (ch:trim (ch:tile-get (strcat "n" (itoa i)))))
-    (if (/= v "") (setq out (cons v out)))
-    (setq i (1+ i))
-  )
-  (ch:join (reverse out) " ")
 )
 
 ;;; The manager the dropdown is currently showing, "" for "(none)"
@@ -360,6 +471,7 @@
 
 ;;; OK button.  Validates before it lets the dialog close.
 (defun ch:dlg-accept ( / j m)
+  (ch:dlg-note-add)                     ; do not lose a half-typed line
   (setq j (ch:trim (ch:tile-get "job"))
         m (ch:read-manager))
   (cond
@@ -374,28 +486,22 @@
       (setq *ch-dlg-job*   j
             *ch-dlg-task*  (ch:trim (ch:tile-get "task"))
             *ch-dlg-mgr*   m
-            *ch-dlg-notes* (ch:read-notes))
+            *ch-dlg-notes* (ch:note-text))
       (done_dialog 1)
     )
   )
   (princ)
 )
 
-;;; Show the pop-up.  Returns (job task notes manager), or nil when the
-;;; user skipped it.  EXTRA is appended to the hint line.
-;;; Sets *ch-dlg-shown* so the caller can tell "user pressed Skip"
-;;; from "the dialog could not be displayed".
-(defun ch:job-dialog (job task notes mgr extra / dcl id rc rec hint mgrs i lines)
-  (setq *ch-dlg-job*    nil
-        *ch-dlg-task*   nil
-        *ch-dlg-notes*  nil
-        *ch-dlg-mgr*    nil
-        *ch-dlg-shown*  nil
-        rc              0
-        rec             (ch:mru-get)
-        mgrs            (ch:managers)
-        *ch-mgr-list*   (cons "" mgrs)
-        hint            (ch:trim (strcat (ch:job-hint) "  " (ch:str extra))))
+;;; Show the pop-up once.  Returns the start_dialog code: 1 = OK,
+;;; 0 = Skip, 3 = the user asked for Notepad, nil = could not display.
+(defun ch:job-dialog-once (job task notes mgr extra / dcl id rc rec hint mgrs i)
+  (setq *ch-dlg-shown* nil
+        rc             nil
+        rec            (ch:mru-get)
+        mgrs           (ch:managers)
+        *ch-mgr-list*  (cons "" mgrs)
+        hint           (ch:trim (strcat (ch:job-hint) "  " (ch:str extra))))
   (if (and (setq dcl (ch:dcl-file))
            (setq id (load_dialog dcl))
            (> id 0))
@@ -414,8 +520,6 @@
           (if rec (mapcar 'add_list rec) (add_list "(none yet)"))
           (end_list)
 
-          ;; the manager dropdown, with a blank first entry so it can be
-          ;; left unanswered when RequireManager is off
           (start_list "manager")
           (add_list (if mgrs "(none)" "(no managers.txt found)"))
           (if mgrs (mapcar 'add_list mgrs))
@@ -423,19 +527,17 @@
           (setq i (ch:index-of mgr *ch-mgr-list*))
           (ch:tile-set "manager" (itoa (if i i 0)))
 
-          ;; the note, spread across the boxes
-          (setq lines (ch:wrap-note notes (ch:note-lines) (ch:note-width))
-                i     0)
-          (repeat (ch:note-lines)
-            (ch:tile-set (strcat "n" (itoa i)) (nth i lines))
-            (setq i (1+ i))
-          )
+          (ch:note-load notes)
 
           (action_tile "recent"
             "(if rec (ch:tile-set \"job\" (nth (atoi $value) rec)))")
-          (action_tile "accept" "(ch:dlg-accept)")
-          (action_tile "cancel" "(done_dialog 0)")
-          (ch:tile-mode "job" 2)                    ; put the caret in the job box
+          (action_tile "noteadd"   "(ch:dlg-note-add)")
+          (action_tile "notelist"  "(ch:dlg-note-pick $value)")
+          (action_tile "notepad"   "(ch:dlg-notepad)")
+          (action_tile "noteclear" "(ch:dlg-note-clear)")
+          (action_tile "accept"    "(ch:dlg-accept)")
+          (action_tile "cancel"    "(done_dialog 0)")
+          (ch:tile-mode "job" 2)               ; put the caret in the job box
 
           (setq rc (start_dialog))
           (setq *ch-in-dialog* nil)
@@ -443,6 +545,23 @@
       )
       (unload_dialog id)
     )
+  )
+  rc
+)
+
+;;; Show the pop-up, looping back if the user goes out to Notepad.
+;;; Returns (job task notes manager), or nil when they skipped.
+(defun ch:job-dialog (job task notes mgr extra / rc guard)
+  (setq guard 0)
+  (setq rc (ch:job-dialog-once job task notes mgr extra))
+  (while (and (= rc 3) (< guard 20))
+    (setq guard (1+ guard))
+    ;; keep whatever they had typed, and take the note out to the editor
+    (setq job   (ch:str *ch-dlg-job*)
+          task  (ch:str *ch-dlg-task*)
+          mgr   (ch:str *ch-dlg-mgr*)
+          notes (ch:notepad-edit (ch:str *ch-dlg-notes*)))
+    (setq rc (ch:job-dialog-once job task notes mgr extra))
   )
   (if (and (= rc 1) *ch-dlg-job*)
     (list *ch-dlg-job* (ch:str *ch-dlg-task*)
@@ -461,6 +580,7 @@
   )
   hit
 )
+
 
 ;;; ---- command-line prompt ------------------------------------------------
 ;;;
