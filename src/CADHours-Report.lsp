@@ -97,10 +97,11 @@
     ((and (= (strlen s) 10) (= (substr s 5 1) "-")) (list s s))
     ((and (= (strlen s) 7) (= (substr s 5 1) "-"))
       (list (strcat s "-01") (strcat s "-31")))
-    ((setq n (atoi s))
-      (if (> n 0)
-        (list (ch:date-shift (ch:today) (- (1- n))) (ch:today))
-        (list (ch:today) (ch:today))))
+    ;; "n" meaning the last n days.  Capped because the day count feeds
+    ;; Julian arithmetic, and AutoLISP integers are 32-bit - a wild
+    ;; number would overflow it and produce a nonsense date range.
+    ((and (> (setq n (atoi s)) 0) (< n 36500))
+      (list (ch:date-shift (ch:today) (- (1- n))) (ch:today)))
     (T (list (ch:today) (ch:today)))
   )
 )
@@ -492,7 +493,7 @@
 )
 
 
-(ch:module "Report" "1.2.0")
+(ch:module "Report" "1.2.1")
 
 (princ)
 ;;; ============================================================ EOF

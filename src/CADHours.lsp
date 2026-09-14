@@ -129,7 +129,7 @@
 
 ;;; Everything that happens when a drawing is ready to be worked in.
 ;;; Runs once per drawing, from S::STARTUP.
-(defun ch:on-doc-load (allow-cli / k)
+(defun ch:on-doc-load (safe-context / k)
   (if *ch-started*
     nil
     (progn
@@ -158,7 +158,7 @@
       (if (and (ch:cfg-bool "PromptOnOpen" T)
                (or (ch:cfg-bool "PromptOnUnsaved" T)
                    (/= (getvar "DWGTITLED") 0)))
-        (ch:begin-with-prompt allow-cli)
+        (ch:begin-with-prompt safe-context)
         (ch:begin-silently)
       )
       (ch:install-reactors)
@@ -170,9 +170,23 @@
 ;;; Ask for the job number, then start the clock.  Dismissing the
 ;;; dialog still starts a session - the time is banked as UNASSIGNED
 ;;; and CHJOB moves it onto a real job later.
-(defun ch:begin-with-prompt (allow-cli)
-  (if (not (ch:safe 'ch:ask-job (list allow-cli)))
-    (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
+;;; SAFE-CONTEXT is T only when we are somewhere a modal dialog is
+;;; allowed - S::STARTUP or a command the user typed.  It is nil when we
+;;; were reached from a reactor callback, where raising a modal DCL
+;;; dialog is unsupported and produces a pop-up that will not accept
+;;; input.  In that case the drawing is tracked quietly and the user is
+;;; told to run CHJOB when it suits them.
+(defun ch:begin-with-prompt (safe-context)
+  (if safe-context
+    (if (not (ch:safe 'ch:ask-job (list T)))
+      (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
+    )
+    (progn
+      (ch:begin-silently)
+      (if *ch-prompt-due*
+        (ch:say "Time is being recorded as UNASSIGNED - type CHJOB to put it on a job.")
+      )
+    )
   )
   (princ)
 )
@@ -229,7 +243,13 @@
   (princ)
 )
 
-(defun c:CHSTART ()
+(defun c:CHSTART ( / *error*)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
   (cond
     (*ch-active* (ch:say "Already tracking - CHSTATUS shows the detail."))
     ((not *ch-started*) (ch:on-doc-load T))
@@ -238,7 +258,13 @@
   (princ)
 )
 
-(defun c:CHSTOP ()
+(defun c:CHSTOP ( / *error*)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
   (if *ch-active*
     (progn
       (ch:accrue)
@@ -251,7 +277,13 @@
   (princ)
 )
 
-(defun c:CHSTATUS ( / )
+(defun c:CHSTATUS ( / *error*)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
   (if (not *ch-started*)
     (ch:say "The tracker has not started in this drawing.  Type CHSTART.")
     (progn
@@ -298,11 +330,17 @@
   (initget "Mine All")
   (setq ans (getkword "\nRe-file interrupted sessions for [Mine/All] <Mine>: "))
   (setq n (ch:recover-live (= ans "All")))
-  (ch:say (strcat (itoa n) " interrupted session(s) re-filed."))
+  (if (= n 0) (ch:say "Nothing to re-file."))
   (princ)
 )
 
-(defun c:CHCONFIG ( / file k hit)
+(defun c:CHCONFIG ( / *error* file k hit)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
   (ch:cfg-load)
   (setq file (ch:cfg-file))
   (ch:hdr "CAD Hours - settings")
@@ -386,7 +424,13 @@
 )
 
 
-(defun c:CADHOURS ()
+(defun c:CADHOURS ( / *error*)
+  (defun *error* (msg)
+    (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
+      (princ (strcat "\n** CADHours: " msg))
+    )
+    (princ)
+  )
   (ch:hdr (strcat "CAD Hours Tracker " *ch-version*))
   (princ "\n  CHJOB       set or change the job number for this drawing")
   (princ "\n  CHSTATUS    what is being tracked right now")

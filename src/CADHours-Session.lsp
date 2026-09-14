@@ -659,6 +659,12 @@
 ;;; beside it - losing close handling, for instance, with no trace
 ;;; outside a debug line.  One event per reactor keeps a failure to
 ;;; itself, and the failure is now reported rather than whispered.
+;;; EVENT must arrive already quoted.  The alist form this replaced kept
+;;; the :vlr-... name inside a quote, so it was never evaluated; passing
+;;; it bare would rely on AutoLISP treating a leading colon as
+;;; self-evaluating, and if it does not, every name becomes nil, no
+;;; reactor registers, and NOTHING is tracked in any drawing.  Quoting at
+;;; the call site is correct either way.
 (defun ch:add-event (maker event callback / r)
   (setq r (vl-catch-all-apply maker (list nil (list (cons event callback)))))
   (if (vl-catch-all-error-p r)
@@ -677,46 +683,46 @@
         ed                 'vlr-editor-reactor)
 
   ;; commands - the main activity signal
-  (ch:add-event ed :vlr-commandWillStart 'ch:on-command-start)
-  (ch:add-event ed :vlr-commandEnded     'ch:on-command-end)
-  (ch:add-event ed :vlr-commandCancelled 'ch:on-command-end)
-  (ch:add-event ed :vlr-commandFailed    'ch:on-command-end)
+  (ch:add-event ed ':vlr-commandWillStart 'ch:on-command-start)
+  (ch:add-event ed ':vlr-commandEnded     'ch:on-command-end)
+  (ch:add-event ed ':vlr-commandCancelled 'ch:on-command-end)
+  (ch:add-event ed ':vlr-commandFailed    'ch:on-command-end)
 
   ;; save / close / quit
-  (ch:add-event ed :vlr-beginSave    'ch:on-save)
-  (ch:add-event ed :vlr-saveComplete 'ch:on-save-complete)
-  (ch:add-event ed :vlr-beginClose   'ch:on-close)
-  (ch:add-event ed :vlr-beginQuit    'ch:on-quit)
+  (ch:add-event ed ':vlr-beginSave    'ch:on-save)
+  (ch:add-event ed ':vlr-saveComplete 'ch:on-save-complete)
+  (ch:add-event ed ':vlr-beginClose   'ch:on-close)
+  (ch:add-event ed ':vlr-beginQuit    'ch:on-quit)
 
   ;; the same two off the drawing reactor, for releases where the editor
   ;; reactor does not raise them.  ch:on-save debounces the duplicate.
-  (ch:add-event 'vlr-dwg-reactor :vlr-beginSave  'ch:on-save)
-  (ch:add-event 'vlr-dwg-reactor :vlr-beginClose 'ch:on-close)
+  (ch:add-event 'vlr-dwg-reactor ':vlr-beginSave  'ch:on-save)
+  (ch:add-event 'vlr-dwg-reactor ':vlr-beginClose 'ch:on-close)
 
   ;; grip edits and Properties-palette changes raise no command, so the
   ;; database reactor is what catches them
   (if (ch:cfg-bool "TrackObjectEdits" T)
     (progn
-      (ch:add-event 'vlr-acdb-reactor :vlr-objectModified 'ch:on-object)
-      (ch:add-event 'vlr-acdb-reactor :vlr-objectAppended 'ch:on-object)
-      (ch:add-event 'vlr-acdb-reactor :vlr-objectErased   'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectModified 'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectAppended 'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectErased   'ch:on-object)
     )
   )
 
   ;; double-click editing
-  (ch:add-event 'vlr-mouse-reactor :vlr-beginDoubleClick 'ch:on-activity)
+  (ch:add-event 'vlr-mouse-reactor ':vlr-beginDoubleClick 'ch:on-activity)
 
   ;; optional, off by default: some sysvars change without the user
   ;; doing anything, which would keep the clock running while idle
   (if (ch:cfg-bool "TrackSysVarChanges" nil)
-    (ch:add-event 'vlr-sysvar-reactor :vlr-sysVarChanged 'ch:on-activity)
+    (ch:add-event 'vlr-sysvar-reactor ':vlr-sysVarChanged 'ch:on-activity)
   )
 
   ;; drawing-tab switches, and the authoritative end-of-drawing event
   (ch:add-event 'vlr-docmanager-reactor
-                :vlr-documentBecameCurrent 'ch:on-doc-switch)
+                ':vlr-documentBecameCurrent 'ch:on-doc-switch)
   (ch:add-event 'vlr-docmanager-reactor
-                :vlr-documentToBeDestroyed 'ch:on-doc-destroy)
+                ':vlr-documentToBeDestroyed 'ch:on-doc-destroy)
 
   (ch:dbg (strcat (itoa (length *ch-reactors*)) " reactor(s) active"))
   (if *ch-reactor-fails*
@@ -821,7 +827,7 @@
 )
 
 
-(ch:module "Session" "1.2.0")
+(ch:module "Session" "1.2.1")
 
 (princ)
 ;;; ============================================================ EOF

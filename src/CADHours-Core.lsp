@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.2.0")
+(setq *ch-version* "1.2.1")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -492,9 +492,13 @@
 ;;; Busy-wait for SECS.  There is no sleep in AutoLISP, and calling
 ;;; the DELAY command from inside a reactor is unsafe, so this spins.
 ;;; Only ever used for waits measured in tens of milliseconds.
-(defun ch:spin (secs / t0)
-  (setq t0 (ch:now))
-  (while (< (ch:secs t0 (ch:now)) secs))
+(defun ch:spin (secs / t0 n)
+  (setq t0 (ch:now) n 0)
+  ;; the iteration cap is a backstop: if the clock ever failed to
+  ;; advance, a bare timing loop would hang AutoCAD with no way out
+  (while (and (< (ch:secs t0 (ch:now)) secs) (< n 2000000))
+    (setq n (1+ n))
+  )
 )
 
 ;;; Remove a lock left behind by a crashed session
@@ -689,7 +693,7 @@
     (cons "RequireManager"     "0")
     (cons "NoteLines"          "4")
     (cons "DefaultJob"         "")
-    (cons "RememberJobInDwg"   "1")
+    (cons "RememberJobInDwg"   "0")
     (cons "WriteEventLog"      "1")
     (cons "TrackObjectEdits"   "1")
     (cons "TrackSysVarChanges" "0")
@@ -1012,7 +1016,7 @@
 )
 
 
-(ch:module "Core" "1.2.0")
+(ch:module "Core" "1.2.1")
 
 (princ)
 ;;; ============================================================ EOF

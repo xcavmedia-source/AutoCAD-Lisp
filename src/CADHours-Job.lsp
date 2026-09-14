@@ -222,6 +222,27 @@
   (princ)
 )
 
+;;; Fill a list_box or popup_list.
+;;;
+;;; start_list raises on an unknown key exactly as get_tile does, but it
+;;; does so during setup - before start_dialog - so an unguarded call
+;;; abandons a dialog that is loaded but never shown, leaks the handle
+;;; and leaves *ch-in-dialog* latched.  end_list is issued outside the
+;;; protected region so the list is never left half-built.
+(defun ch:list-fill (key items / r it)
+  (setq r (vl-catch-all-apply 'start_list (list key)))
+  (if (vl-catch-all-error-p r)
+    nil
+    (progn
+      (foreach it items
+        (vl-catch-all-apply 'add_list (list (ch:str it)))
+      )
+      (vl-catch-all-apply 'end_list nil)
+      T
+    )
+  )
+)
+
 
 ;;; ---- the notes panel ----------------------------------------------------
 ;;;
@@ -240,7 +261,9 @@
   (max 2 (min 12 (ch:cfg-int "NoteLines" 4)))
 )
 
-(defun ch:note-width () 76)
+;;; Must not exceed the list_box width below, or wrapped lines are
+;;; clipped where the user cannot see them.
+(defun ch:note-width () 58)
 
 ;;; Break TEXT into display lines of at most WIDTH, on spaces.  COUNT
 ;;; caps the number of lines; anything past it is crammed into the last.
@@ -289,16 +312,8 @@
 )
 
 ;;; Repaint the panel from *ch-note-lines*
-(defun ch:note-refresh ( / ln)
-  (vl-catch-all-apply
-    '(lambda ()
-       (start_list "notelist")
-       (if *ch-note-lines*
-         (foreach ln *ch-note-lines* (add_list ln))
-         (add_list "")
-       )
-       (end_list))
-    nil)
+(defun ch:note-refresh ()
+  (ch:list-fill "notelist" (if *ch-note-lines* *ch-note-lines* (list "")))
   (princ)
 )
 
@@ -428,7 +443,7 @@
     "      : button { key = \"notepad\"; label = \" &Notepad... \"; fixed_width = true; }"
     "      : button { key = \"noteclear\"; label = \" Clear \"; fixed_width = true; }"
     "    }"
-    "    : text { label = \"  Type a line and press Enter, or use Notepad for a long note.  Click a line to edit it.\"; }"
+    "    : text { width = 62; label = \"  Enter adds a line.  Click a line to edit it.\"; }"
     "  }"
     "  : errtile { width = 64; }"
     "  : row {"
@@ -516,14 +531,9 @@
           (ch:tile-set "task" task)
           (ch:tile-set "hint" (strcat "  " hint))
 
-          (start_list "recent")
-          (if rec (mapcar 'add_list rec) (add_list "(none yet)"))
-          (end_list)
-
-          (start_list "manager")
-          (add_list (if mgrs "(none)" "(no managers.txt found)"))
-          (if mgrs (mapcar 'add_list mgrs))
-          (end_list)
+          (ch:list-fill "recent" (if rec rec (list "(none yet)")))
+          (ch:list-fill "manager"
+            (cons (if mgrs "(none)" "(no managers.txt found)") mgrs))
           (setq i (ch:index-of mgr *ch-mgr-list*))
           (ch:tile-set "manager" (itoa (if i i 0)))
 
@@ -554,6 +564,8 @@
 (defun ch:job-dialog (job task notes mgr extra / rc guard)
   (setq guard 0)
   (setq rc (ch:job-dialog-once job task notes mgr extra))
+  ;; exhausting the loop must not discard what the user typed: the last
+  ;; round's values are still stashed, so treat it as an accept
   (while (and (= rc 3) (< guard 20))
     (setq guard (1+ guard))
     ;; keep whatever they had typed, and take the note out to the editor
@@ -563,7 +575,7 @@
           notes (ch:notepad-edit (ch:str *ch-dlg-notes*)))
     (setq rc (ch:job-dialog-once job task notes mgr extra))
   )
-  (if (and (= rc 1) *ch-dlg-job*)
+  (if (and (or (= rc 1) (= rc 3)) *ch-dlg-job*)
     (list *ch-dlg-job* (ch:str *ch-dlg-task*)
           (ch:str *ch-dlg-notes*) (ch:str *ch-dlg-mgr*))
   )
@@ -719,12 +731,14 @@
 ;;; suits them.  Time is still being recorded as UNASSIGNED meanwhile,
 ;;; so nothing is lost by them finishing what they were doing first.
 (defun ch:maybe-reprompt ( / wait)
-  (setq wait (float (max 30 (ch:cfg-int "RepromptSeconds" 120))))
+  ;; the cheap flags first: this runs after every single command, and
+  ;; ch:cfg-int can fall through to reading the settings file
   (if (and *ch-prompt-due*
            *ch-active*
            (not *ch-in-dialog*)
-           (ch:cfg-bool "RequireJobNumber" T)
            (ch:current-p)
+           (ch:cfg-bool "RequireJobNumber" T)
+           (setq wait (float (max 30 (ch:cfg-int "RepromptSeconds" 120))))
            (> (ch:secs *ch-last-prompt* (ch:now)) wait))
     (progn
       (setq *ch-last-prompt* (ch:now))
@@ -737,7 +751,7 @@
 )
 
 
-(ch:module "Job" "1.2.0")
+(ch:module "Job" "1.2.1")
 
 (princ)
 ;;; ============================================================ EOF
