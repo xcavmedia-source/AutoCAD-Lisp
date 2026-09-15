@@ -311,12 +311,13 @@
 
 ;;; Everything that happens when a drawing is ready to be worked in.
 ;;; Runs once per drawing, from S::STARTUP.
-(defun ch:on-doc-load (safe-context / k t0)
+(defun ch:on-doc-load (safe-context / k t0 total tsweep)
   (if *ch-started*
     nil
     (progn
       (setq *ch-started* T
-            t0           (getvar "DATE"))
+            t0           (getvar "DATE")
+            *ch-t-ask*   0.0)
       (ch:cfg-load)
       (ch:reset-state)
       (ch:cache-settings)
@@ -329,6 +330,7 @@
       ;; delay people actually notice.
       (if (ch:sweep-due)
         (progn
+          (setq tsweep (getvar "DATE"))
           (if (ch:cfg-bool "AutoRecover" T) (ch:safe 'ch:recover-live (list nil)))
           (ch:safe 'ch:flush-spool nil)
           ;; tidy-ups that used to sit on the path a drawing closes
@@ -337,8 +339,18 @@
                    (list (ch:sessions-dir (ch:root) (ch:month-str (ch:parts)))))
           (ch:safe 'ch:migrate-headers
                    (list (ch:sessions-dir (ch:root) (ch:month-str (ch:parts)))
-                         (ch:session-header)))
+                         (ch:session-header)
+                         (ch:month-str (ch:parts))))
           (ch:safe 'ch:sweep-done nil)
+          (setq *ch-t-sweep* (* 86400000.0 (- (getvar "DATE") tsweep)))
+          ;; worth saying: this is why one drawing in an hour opens
+          ;; slower than the rest, and why the first one after an
+          ;; update is the slowest of all
+          (if (> *ch-t-sweep* 750.0)
+            (ch:say (strcat "housekeeping took " (ch:fmt2 *ch-t-sweep*)
+                            " ms - it runs at most every "
+                            (itoa (ch:cfg-int "SweepMinutes" 60)) " minutes."))
+          )
         )
       )
 
@@ -352,6 +364,10 @@
       ;; asking which job that belongs to is a question nobody wants.
       ;; With PromptOnUnsaved = 0 it is tracked quietly and the question
       ;; waits until the user actually does something.
+      ;; everything above is our own work; everything below may sit
+      ;; waiting on the user
+      (setq *ch-t-pre* (* 86400000.0 (- (getvar "DATE") t0)))
+
       (if (and (ch:cfg-bool "PromptOnOpen" T)
                (or (ch:cfg-bool "PromptOnUnsaved" T)
                    (/= (getvar "DWGTITLED") 0)))
@@ -367,7 +383,9 @@
         )
       )
       (ch:install-reactors)
-      (setq *ch-t-start* (* 86400000.0 (- (getvar "DATE") t0)))
+      (setq total        (* 86400000.0 (- (getvar "DATE") t0))
+            *ch-t-post*  (- total *ch-t-pre* *ch-t-ask*)
+            *ch-t-start* (- total *ch-t-ask*))
     )
   )
   (princ)
@@ -580,8 +598,17 @@
                           (/= (strcase *ch-mod-dir*) (strcase *ch-home*)))
                    "   [local mirror]" "   [server]")))
   (princ (strcat "\n  Start-up     : "
-                 (if *ch-t-load*  (strcat (ch:fmt2 *ch-t-load*)  " ms loading modules") "?")
-                 (if *ch-t-start* (strcat ",  " (ch:fmt2 *ch-t-start*) " ms starting the session") "")))
+                 (if *ch-t-load* (ch:fmt2 *ch-t-load*) "?") " ms loading modules"))
+  (princ (strcat "\n                 "
+                 (if *ch-t-pre*  (ch:fmt2 *ch-t-pre*)  "?") " ms before the pop-up"
+                 ",  "
+                 (if *ch-t-post* (ch:fmt2 *ch-t-post*) "?") " ms after it"))
+  (princ (strcat "\n                 "
+                 (if *ch-t-ask*  (ch:fmt2 *ch-t-ask*)  "0") " ms waiting for the pop-up to be answered"
+                 "   (that part is not the tracker)"))
+  (if *ch-t-sweep*
+    (princ (strcat "\n                 " (ch:fmt2 *ch-t-sweep*)
+                   " ms housekeeping, in this drawing only")))
   (princ (strcat "\n  Reports      : "
                  (if (ch:reports-ready) "loaded" "load on first use")))
   (princ (strcat "\n  Config file  : " (if file file "(none - built-in defaults)")))
@@ -591,10 +618,12 @@
   (princ (strcat "\n  Local spool  : " (ch:cfg-path "LocalSpool")))
   (princ "\n")
   (foreach k '("IdleSeconds" "IdleCreditSeconds" "HeartbeatSeconds"
-               "MinSessionSeconds" "PromptOnOpen" "RequireJobNumber"
-               "RepromptSeconds" "JobPattern" "JobFromPath" "DefaultJob"
+               "MinSessionSeconds" "PromptOnOpen" "PromptOnUnsaved"
+               "RequireJobNumber" "RepromptSeconds" "UseDialog" "NoteLines"
+               "JobPattern" "JobFromPath" "DefaultJob" "RequireManager"
                "RememberJobInDwg" "WriteEventLog" "TrackObjectEdits"
-               "TrackSysVarChanges" "AutoRecover" "StaleLiveHours" "Debug")
+               "TrackSysVarChanges" "AutoRecover" "SweepMinutes"
+               "StaleLiveHours" "Debug")
     (princ (strcat "\n  " (ch:rpad k 20) ": " (ch:cfg k)))
   )
   (princ "\n")

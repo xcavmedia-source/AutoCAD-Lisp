@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.3.0")
+(setq *ch-version* "1.3.1")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -567,15 +567,16 @@
 
 ;;; Bring an existing file's header up to date.
 ;;;
-;;; Columns are only ever appended, never reordered, so rows written
-;;; under an older header still line up - they simply run out of fields
-;;; early and read as empty.  The header itself has to be corrected
-;;; though, or the file opens in Excel with an unnamed column.
-(defun ch:fix-header (path header / lines f ln)
+;;; Checks line one first.  Reading the whole file to compare its header
+;;; meant pulling every monthly file across the share; now that only
+;;; happens to a file whose header has actually moved.
+(defun ch:fix-header (path header / first lines f ln)
+  (setq first (ch:str (ch:first-line path)))
   (if (and header
-           (setq lines (ch:read-lines path))
-           (/= (car lines) header)
-           (= (substr (car lines) 1 12) "\"session_id\""))
+           (/= first "")
+           (/= first header)
+           (= (substr first 1 12) "\"session_id\"")
+           (setq lines (ch:read-lines path)))
     (if (setq f (open path "w"))
       (progn
         (write-line header f)
@@ -927,11 +928,27 @@
   )
 )
 
-;;; Bring every sessions file in DIR up to the current header.
-(defun ch:migrate-headers (dir header / n f)
+;;; Migration is a one-off per month: once every file in a month
+;;; folder carries the current header, there is nothing left to do, so
+;;; a local marker stops the sweep walking the share for it again.
+(defun ch:migrate-marker (month)
+  (ch:path+ (ch:cfg-path "LocalSpool") (strcat "headers-" month ".txt"))
+)
+
+(defun ch:migrate-due (month)
+  (null (findfile (ch:migrate-marker month)))
+)
+
+(defun ch:migrate-headers (dir header month / n f)
   (setq n 0)
-  (foreach f (ch:files dir "*.csv")
-    (if (ch:safe 'ch:fix-header (list f header)) (setq n (1+ n)))
+  (if (ch:migrate-due month)
+    (progn
+      (foreach f (ch:files dir "*.csv")
+        (if (ch:safe 'ch:fix-header (list f header)) (setq n (1+ n)))
+      )
+      (ch:mkpath (vl-filename-directory (ch:migrate-marker month)))
+      (ch:write-line-file (ch:migrate-marker month) (ch:stamp (ch:parts)) nil)
+    )
   )
   n
 )
@@ -1085,7 +1102,7 @@
 )
 
 
-(ch:module "Core" "1.3.0")
+(ch:module "Core" "1.3.1")
 
 (princ)
 ;;; ============================================================ EOF

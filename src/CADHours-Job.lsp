@@ -510,7 +510,7 @@
 
 ;;; Show the pop-up once.  Returns the start_dialog code: 1 = OK,
 ;;; 0 = Skip, 3 = the user asked for Notepad, nil = could not display.
-(defun ch:job-dialog-once (job task notes mgr extra / dcl id rc rec hint mgrs i)
+(defun ch:job-dialog-once (job task notes mgr extra / dcl id rc rec hint mgrs i ta)
   (setq *ch-dlg-shown* nil
         rc             nil
         rec            (ch:mru-get)
@@ -549,7 +549,13 @@
           (action_tile "cancel"    "(done_dialog 0)")
           (ch:tile-mode "job" 2)               ; put the caret in the job box
 
+          ;; start_dialog blocks until the user answers.  That wait is
+          ;; theirs, not ours, and measuring it as start-up time made a
+          ;; twelve-second think look like a twelve-second delay.
+          (setq ta (getvar "DATE"))
           (setq rc (start_dialog))
+          (setq *ch-t-ask* (+ (if *ch-t-ask* *ch-t-ask* 0.0)
+                              (* 86400000.0 (- (getvar "DATE") ta))))
           (setq *ch-in-dialog* nil)
         )
       )
@@ -751,7 +757,7 @@
 )
 
 
-(ch:module "Job" "1.3.0")
+(ch:module "Job" "1.3.1")
 
 (princ)
 ;;; ============================================================ EOF
