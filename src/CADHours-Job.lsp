@@ -168,26 +168,40 @@
 )
 
 ;;; Best guess at the job number for the drawing at PATH.
-;;; Returns (job task source).
+;;; Returns (job task source evidence).
+;;;
+;;; EVIDENCE is the part that matters.  It is T only when the job was
+;;; worked out from the drawing itself - what this user last booked
+;;; against this exact file, a job number stored inside it, or one
+;;; recognised in its folder path.  Those are facts about this drawing.
+;;;
+;;; "Your last job" is not.  It is a convenience for filling the pop-up,
+;;; where the user sees it and confirms or changes it.  Used without
+;;; asking it silently books a template, a scratch file or somebody
+;;; else's drawing to whatever job happened to be open beforehand, which
+;;; is worse than recording nothing - a wrong number in a timesheet is
+;;; harder to spot than a missing one.
 (defun ch:suggest-job (path / rec j)
   (cond
     ((setq rec (ch:dwg-recall path))
-      (list (car rec) (cadr rec) "last used on this drawing"))
+      (list (car rec) (cadr rec) "last used on this drawing" T))
     ((and (ch:cfg-bool "RememberJobInDwg" nil)
           (/= (setq j (ch:dwg-job-ldata)) ""))
-      (list j "" "stored in this drawing"))
+      (list j "" "stored in this drawing" T))
     ((setq j (ch:job-from-path path (ch:trim (ch:cfg "JobPattern"))))
-      (list j "" "from the folder name"))
+      (list j "" "from the folder name" T))
+    ;; below here: convenience only, never used without confirmation
     ((/= (setq j (ch:mru-last)) "")
-      (list j "" "your last job"))
+      (list j "" "your last job" nil))
     ((/= (setq j (ch:trim (ch:cfg "DefaultJob"))) "")
-      (list j "" "site default"))
-    (T (list "" "" ""))
+      (list j "" "the site default" nil))
+    (T (list "" "" "" nil))
   )
 )
 
-
-;;; Best guess at the project manager for JOB.
+;;; Best guess at the project manager for JOB.  EVIDENCE has the same
+;;; meaning as above: whoever this user last picked is a suggestion for
+;;; the pop-up, not something to attach to a session unasked.
 (defun ch:suggest-manager (job / m)
   (cond
     ((and *ch-active* (/= (ch:str *ch-mgr*) "")) *ch-mgr*)
@@ -196,8 +210,12 @@
   )
 )
 
-
-;;; ---- the dialog --------------------------------------------------------
+(defun ch:manager-evidence (job)
+  (if (or (and *ch-active* (/= (ch:str *ch-mgr*) ""))
+          (ch:job-mgr-recall job))
+    T
+  )
+)
 
 ;;; ---- guarded tile access ------------------------------------------------
 ;;;
@@ -757,7 +775,7 @@
 )
 
 
-(ch:module "Job" "1.3.1")
+(ch:module "Job" "1.3.2")
 
 (princ)
 ;;; ============================================================ EOF

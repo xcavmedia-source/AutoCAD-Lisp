@@ -376,9 +376,12 @@
           (ch:begin-silently)
           ;; explain the silence, so "no pop-up" is never a mystery
           (if (and (ch:cfg-bool "PromptOnOpen" T) (= (getvar "DWGTITLED") 0))
-            (ch:say (strcat "unsaved drawing, so no pop-up - tracking as "
-                            (if (= *ch-job* "") "UNASSIGNED" *ch-job*)
-                            ".  CHJOB sets the job; PromptOnUnsaved=1 asks on open."))
+            (if (= (strcase (ch:str *ch-job*)) "UNASSIGNED")
+              (ch:say (strcat "unsaved drawing - time is UNASSIGNED until you "
+                              "type CHJOB, or save it into a job folder."))
+              (ch:say (strcat "unsaved drawing, so no pop-up - tracking as "
+                              *ch-job* ", taken from the folder path."))
+            )
           )
         )
       )
@@ -428,11 +431,24 @@
 )
 
 ;;; PromptOnOpen=0: track quietly against the best guess
-(defun ch:begin-silently ( / g)
-  (setq g (ch:suggest-job (ch:dwg-path)))
-  (ch:start-session (if (= (car g) "") "UNASSIGNED" (car g)) (cadr g) ""
-                    (ch:suggest-manager (car g)))
-  (if (= (car g) "")
+;;; Start tracking without asking.
+;;;
+;;; Only a job worked out FROM THIS DRAWING is accepted here.  Anything
+;;; less - the last job this user happened to have open, the site
+;;; default - is a suggestion for the pop-up, not a fact, and booking
+;;; time against it unasked puts a wrong number in the timesheet.
+;;; Without evidence the session is UNASSIGNED and the user is asked.
+(defun ch:begin-silently ( / g job mgr)
+  (setq g   (ch:suggest-job (ch:dwg-path))
+        job (if (cadddr g) (car g) "")
+        mgr (if (and (/= job "") (ch:manager-evidence job))
+              (ch:suggest-manager job)
+              ""))
+  (ch:start-session (if (= job "") "UNASSIGNED" job)
+                    (if (= job "") "" (cadr g))
+                    ""
+                    mgr)
+  (if (= job "")
     (setq *ch-prompt-due* (ch:cfg-bool "RequireJobNumber" T))
   )
   (princ)

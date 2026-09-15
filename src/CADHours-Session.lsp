@@ -553,7 +553,7 @@
 ;;; The name now moves first and the key is re-derived from it.
 (defun ch:on-save-complete (rea args)
   (vl-catch-all-apply
-    '(lambda ( / new k)
+    '(lambda ( / new k j)
        (setq new (ch:dwg-path))
        (if (and (/= new "") (/= new *ch-dwg*))
          (progn
@@ -562,6 +562,24 @@
            (setq *ch-dwg* new)
            (if (not (vl-catch-all-error-p k)) (setq *ch-doc-key* k))
            (ch:recheck-current)
+
+           ;; A drawing saved into its job folder has just told us which
+           ;; job it belongs to.  That is evidence, not a guess, so an
+           ;; unassigned session adopts it - which is how a template or
+           ;; a scratch file ends up on the right job without anybody
+           ;; being asked twice.
+           (if (or (= *ch-job* "") (= (strcase *ch-job*) "UNASSIGNED"))
+             (progn
+               (setq j (ch:job-from-path new (ch:trim (ch:cfg "JobPattern"))))
+               (if j
+                 (progn
+                   (ch:set-job j *ch-task* *ch-notes* *ch-mgr*)
+                   (ch:say (strcat "saved into job " j
+                                   " - this drawing's time is now on it."))
+                 )
+               )
+             )
+           )
            (ch:write-live)
          )
        )
@@ -850,7 +868,7 @@
 )
 
 
-(ch:module "Session" "1.3.1")
+(ch:module "Session" "1.3.2")
 
 (princ)
 ;;; ============================================================ EOF
