@@ -420,12 +420,7 @@
       )
       (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
     )
-    (T
-      (ch:begin-silently)
-      (if *ch-prompt-due*
-        (ch:say "Time is being recorded as UNASSIGNED - type CHJOB to put it on a job.")
-      )
-    )
+    (T (ch:begin-silently))
   )
   (princ)
 )
@@ -451,24 +446,55 @@
   (if (= job "")
     (setq *ch-prompt-due* (ch:cfg-bool "RequireJobNumber" T))
   )
+  ;; Starting without a pop-up must never be silent.  "Nothing said it
+  ;; was recording" is indistinguishable from "it is not recording".
+  (if (= job "")
+    (ch:say "Time is being recorded as UNASSIGNED - type CHJOB to put it on a job.")
+    (ch:say (strcat "Tracking time on job " job
+                    " (" (caddr g) ")"
+                    (if (/= mgr "") (strcat " for " mgr) "")
+                    " - CHJOB changes it, CHSTATUS shows the detail."))
+  )
   (princ)
 )
 
-;;; Backstop.  If S::STARTUP never fires - another application replaced
-;;; it, or the drawing was opened in a way that skipped it - the first
-;;; finished command starts the tracker instead.
+;;; Backstop, for the case where S::STARTUP never fires - another
+;;; application redefined it, or the drawing was opened in a way that
+;;; skipped it.  The first command that finishes starts the tracker
+;;; instead.
+;;;
+;;; It has to WAIT, though.  This is an editor reactor, so it is armed
+;;; the moment the file loads and hears about commands application-wide
+;;; - including the command that is still finishing the job of opening
+;;; this very drawing.  Firing on that one meant the backstop beat
+;;; S::STARTUP to it: the drawing was started without a safe context, so
+;;; no pop-up could be shown, and by the time S::STARTUP arrived the
+;;; work was already done and it quietly did nothing.  The second
+;;; drawing of a session was the usual victim.
+;;;
+;;; S::STARTUP follows acaddoc.lsp within milliseconds, so a few seconds
+;;; of grace is enough to tell "not yet" from "never coming".
+;;;
 ;;; Disarming is done with a flag rather than vlr-remove: taking a
-;;; reactor apart from inside its own callback is not safe, and a
-;;; no-op callback costs nothing.
+;;; reactor apart from inside its own callback is not safe, and a no-op
+;;; callback costs nothing.
 (defun ch:boot-guard-cb (rea args)
   (vl-catch-all-apply
     '(lambda ()
-       (if *ch-boot-guard*
+       (if (and *ch-boot-guard*
+                (not *ch-started*)
+                *ch-loaded-at*
+                (> (abs (* 86400.0 (- (getvar "DATE") *ch-loaded-at*))) 3.0))
          (progn
            (setq *ch-boot-guard* nil)
-           ;; inside a reactor - the command line is not ours to use
-           (if (not *ch-started*) (ch:on-doc-load nil))
+           (ch:say "S::STARTUP did not run for this drawing - starting anyway.")
+           ;; inside a reactor, so no dialog and no command line
+           (ch:on-doc-load nil)
          )
+       )
+       ;; started normally: stand down without doing anything
+       (if (and *ch-boot-guard* *ch-started*)
+         (setq *ch-boot-guard* nil)
        ))
     nil)
   (princ)
@@ -747,6 +773,7 @@
       )
     )
 
+    (setq *ch-loaded-at* (getvar "DATE"))
     (ch:install-boot-guard)
     (if (ch:boot-check)
       (princ (strcat "\nCAD Hours Tracker " *ch-version*
