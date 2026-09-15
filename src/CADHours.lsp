@@ -30,10 +30,30 @@
 (vl-load-com)
 
 
-;;; ---- finding our own folder --------------------------------------
+;;; ---- finding our own folder, and loading fast --------------------
 ;;;
-;;; Deliberately self-contained: it runs before the rest of the
-;;; tracker exists, so it cannot use anything from CADHours-Core.
+;;; AutoCAD gives every open drawing its own AutoLISP namespace, so this
+;;; code has to be loaded once per drawing - there is no way round that
+;;; for a per-document tool.  What matters is where it is loaded FROM.
+;;; Read straight off the server, that is 100 kB over SMB every time
+;;; somebody opens a file, which is exactly the delay nobody wants.
+;;;
+;;; So the modules are mirrored into the user's local profile and loaded
+;;; from there.  The server copy is still the master: its timestamps are
+;;; checked on every drawing (a handful of cheap stat calls) and the
+;;; mirror is refreshed only when they change - normally once, after a
+;;; deployment.  Settings still come from the server, so changing
+;;; cadhours.ini or managers.txt behaves exactly as before.
+;;;
+;;; Deliberately self-contained: this runs before CADHours-Core exists.
+
+;;; Modules every drawing needs
+(setq *ch-core-modules*
+  '("CADHours-Core.lsp" "CADHours-Session.lsp" "CADHours-Job.lsp"))
+
+;;; Modules only needed once somebody asks for a report
+(setq *ch-report-modules*
+  '("CADHours-Report.lsp" "CADHours-Dashboard.lsp"))
 
 (defun ch:boot-env (name / v)
   (setq v (getenv name))
@@ -68,7 +88,142 @@
   hit
 )
 
-(defun ch:boot-load ( / home ok f)
+;;; Where the local mirror lives, or nil if we have nowhere to put it
+(defun ch:boot-mirror ( / la)
+  (setq la (ch:boot-env "LOCALAPPDATA"))
+  (if (= la "") nil (strcat la "\\CADHours\\modules"))
+)
+
+(defun ch:boot-mkdir (dir / parts cur p)
+  (if (vl-file-directory-p dir)
+    T
+    (progn
+      (setq parts (ch:boot-split dir "\\")
+            cur   (car parts))
+      (foreach p (cdr parts)
+        (if (/= p "")
+          (progn
+            (setq cur (strcat cur "\\" p))
+            (if (not (vl-file-directory-p cur)) (vl-mkdir cur))
+          )
+        )
+      )
+      (vl-file-directory-p dir)
+    )
+  )
+)
+
+(defun ch:boot-split (str delim / pos res)
+  (while (setq pos (vl-string-search delim str))
+    (setq res (cons (substr str 1 pos) res)
+          str (substr str (+ pos 1 (strlen delim))))
+  )
+  (reverse (cons str res))
+)
+
+;;; One string describing the server copies, so a change is detectable
+;;; without reading them.  Stat calls, not reads.
+(defun ch:boot-fingerprint (home / s f)
+  (setq s "")
+  (foreach f (append *ch-core-modules* *ch-report-modules*)
+    (setq s (strcat s "|" (vl-princ-to-string
+                            (vl-file-systime (strcat home "\\" f)))))
+  )
+  s
+)
+
+(defun ch:boot-read1 (path / f v)
+  (if (and (findfile path) (setq f (open path "r")))
+    (progn (setq v (read-line f)) (close f) v)
+  )
+)
+
+(defun ch:boot-write1 (path text / f)
+  (if (setq f (open path "w"))
+    (progn (write-line text f) (close f) T)
+  )
+)
+
+(defun ch:boot-copy (src dst / fi fo ln ok)
+  (if (setq fi (open src "r"))
+    (progn
+      (if (setq fo (open dst "w"))
+        (progn
+          (while (setq ln (read-line fi)) (write-line ln fo))
+          (close fo)
+          (setq ok T)
+        )
+      )
+      (close fi)
+    )
+  )
+  ok
+)
+
+;;; Refresh the mirror.  Each file is written beside its target and
+;;; moved into place, and the fingerprint is written last, so a copy
+;;; interrupted half way leaves the mirror marked stale rather than
+;;; leaving a truncated module for the next drawing to load.
+(defun ch:boot-refresh (home mirror fp / ok f src tmp dst)
+  (setq ok T)
+  (if (ch:boot-mkdir mirror)
+    (progn
+      (foreach f (append *ch-core-modules* *ch-report-modules*)
+        (setq src (strcat home "\\" f)
+              tmp (strcat mirror "\\" f ".new")
+              dst (strcat mirror "\\" f))
+        (if (ch:boot-copy src tmp)
+          (progn
+            (if (findfile dst) (vl-file-delete dst))
+            (if (not (vl-file-rename tmp dst)) (setq ok nil))
+          )
+          (setq ok nil)
+        )
+      )
+      (if ok (ch:boot-write1 (strcat mirror "\\fingerprint.txt") fp))
+      ok
+    )
+  )
+)
+
+;;; Decide where to load modules from, refreshing the mirror if needed.
+;;; Returns the folder to load from - the mirror when it is usable, the
+;;; server when it is not.
+(defun ch:boot-source (home / mirror fp)
+  (setq mirror (ch:boot-mirror))
+  (if (null mirror)
+    home
+    (progn
+      (setq fp (ch:boot-fingerprint home))
+      (if (= fp (ch:boot-read1 (strcat mirror "\\fingerprint.txt")))
+        mirror
+        (if (ch:boot-refresh home mirror fp)
+          (progn
+            (princ "\nCAD Hours Tracker: local copy updated.")
+            mirror
+          )
+          home
+        )
+      )
+    )
+  )
+)
+
+(defun ch:boot-load-file (dir f / r)
+  (if (findfile (strcat dir "\\" f))
+    (progn
+      (setq r (vl-catch-all-apply 'load (list (strcat dir "\\" f))))
+      (if (vl-catch-all-error-p r)
+        (progn (princ (strcat "\n** CADHours: failed to load " f)) nil)
+        T
+      )
+    )
+    (progn (princ (strcat "\n** CADHours: missing " f)) nil)
+  )
+)
+
+(defun ch:boot-load ( / home ok f t0)
+  (setq t0 (getvar "DATE"))
   (setq home (ch:boot-home) ok T)
   (if (null home)
     (progn
@@ -77,26 +232,12 @@
       nil
     )
     (progn
-      (setq *ch-home* home)
-      (foreach f '("CADHours-Core.lsp"
-                   "CADHours-Session.lsp"
-                   "CADHours-Job.lsp"
-                   "CADHours-Report.lsp"
-                   "CADHours-Dashboard.lsp")
-        (if (findfile (strcat home "\\" f))
-          (if (vl-catch-all-error-p
-                (vl-catch-all-apply 'load (list (strcat home "\\" f))))
-            (progn
-              (princ (strcat "\n** CADHours: failed to load " f))
-              (setq ok nil)
-            )
-          )
-          (progn
-            (princ (strcat "\n** CADHours: missing " f))
-            (setq ok nil)
-          )
-        )
+      (setq *ch-home*    home                    ; settings still come from here
+            *ch-mod-dir* (ch:boot-source home))  ; code comes from here
+      (foreach f *ch-core-modules*
+        (if (not (ch:boot-load-file *ch-mod-dir* f)) (setq ok nil))
       )
+      (setq *ch-t-load* (* 86400000.0 (- (getvar "DATE") t0)))
       ok
     )
   )
@@ -125,25 +266,81 @@
 )
 
 
+;;; ---- reporting, loaded on demand ----------------------------------
+;;;
+;;; Nothing in the reporting or dashboard modules is needed to track
+;;; time, and together they are about a fifth of the code.  Keeping them
+;;; out of every drawing pays for itself; the commands below pull them
+;;; in the first time one is actually used, which costs a moment once
+;;; per drawing rather than a moment on every drawing.
+
+(defun ch:reports-ready ()
+  (if ch:load-rows T nil)
+)
+
+(defun ch:need-reports ( / f)
+  (if (ch:reports-ready)
+    T
+    (progn
+      (princ "\nLoading reports... ")
+      (foreach f *ch-report-modules* (ch:boot-load-file *ch-mod-dir* f))
+      (if (ch:reports-ready)
+        T
+        (progn
+          (princ "\n** CADHours: the reporting modules could not be loaded.")
+          nil
+        )
+      )
+    )
+  )
+)
+
+;;; Each stub is replaced by the real command as the module loads, so
+;;; the call below lands on the real one.
+(defun c:CHREPORT   () (if (ch:need-reports) (c:CHREPORT))   (princ))
+(defun c:CHTODAY    () (if (ch:need-reports) (c:CHTODAY))    (princ))
+(defun c:CHWEEK     () (if (ch:need-reports) (c:CHWEEK))     (princ))
+(defun c:CHJOBHOURS () (if (ch:need-reports) (c:CHJOBHOURS)) (princ))
+(defun c:CHFIND     () (if (ch:need-reports) (c:CHFIND))     (princ))
+(defun c:CHEXPORT   () (if (ch:need-reports) (c:CHEXPORT))   (princ))
+(defun c:CHDASH     () (if (ch:need-reports) (c:CHDASH))     (princ))
+(defun c:CHDASHALL  () (if (ch:need-reports) (c:CHDASHALL))  (princ))
+
+
 ;;; ---- per-drawing start-up ------------------------------------------
 
 ;;; Everything that happens when a drawing is ready to be worked in.
 ;;; Runs once per drawing, from S::STARTUP.
-(defun ch:on-doc-load (safe-context / k)
+(defun ch:on-doc-load (safe-context / k t0)
   (if *ch-started*
     nil
     (progn
-      (setq *ch-started* T)
+      (setq *ch-started* T
+            t0           (getvar "DATE"))
       (ch:cfg-load)
       (ch:reset-state)
       (ch:cache-settings)
       (setq k (vl-catch-all-apply 'ch:active-doc-key nil))
       (setq *ch-doc-key* (if (vl-catch-all-error-p k) "" k))
 
-      ;; housekeeping: re-file anything a crash left behind, and push
-      ;; up rows written while the share was unreachable
-      (if (ch:cfg-bool "AutoRecover" T) (ch:safe 'ch:recover-live (list nil)))
-      (ch:safe 'ch:flush-spool nil)
+      ;; housekeeping: re-file anything a crash left behind, and push up
+      ;; rows written while the share was unreachable.  Throttled - both
+      ;; walk the share, and doing that on every drawing open is the
+      ;; delay people actually notice.
+      (if (ch:sweep-due)
+        (progn
+          (if (ch:cfg-bool "AutoRecover" T) (ch:safe 'ch:recover-live (list nil)))
+          (ch:safe 'ch:flush-spool nil)
+          ;; tidy-ups that used to sit on the path a drawing closes
+          ;; through, where they were costing the user a visible pause
+          (ch:safe 'ch:clear-stale-locks
+                   (list (ch:sessions-dir (ch:root) (ch:month-str (ch:parts)))))
+          (ch:safe 'ch:migrate-headers
+                   (list (ch:sessions-dir (ch:root) (ch:month-str (ch:parts)))
+                         (ch:session-header)))
+          (ch:safe 'ch:sweep-done nil)
+        )
+      )
 
       (if (ch:spooling-p)
         (ch:say (strcat "Log share is not reachable - logging locally to "
@@ -159,9 +356,18 @@
                (or (ch:cfg-bool "PromptOnUnsaved" T)
                    (/= (getvar "DWGTITLED") 0)))
         (ch:begin-with-prompt safe-context)
-        (ch:begin-silently)
+        (progn
+          (ch:begin-silently)
+          ;; explain the silence, so "no pop-up" is never a mystery
+          (if (and (ch:cfg-bool "PromptOnOpen" T) (= (getvar "DWGTITLED") 0))
+            (ch:say (strcat "unsaved drawing, so no pop-up - tracking as "
+                            (if (= *ch-job* "") "UNASSIGNED" *ch-job*)
+                            ".  CHJOB sets the job; PromptOnUnsaved=1 asks on open."))
+          )
+        )
       )
       (ch:install-reactors)
+      (setq *ch-t-start* (* 86400000.0 (- (getvar "DATE") t0)))
     )
   )
   (princ)
@@ -176,12 +382,24 @@
 ;;; dialog is unsupported and produces a pop-up that will not accept
 ;;; input.  In that case the drawing is tracked quietly and the user is
 ;;; told to run CHJOB when it suits them.
-(defun ch:begin-with-prompt (safe-context)
-  (if safe-context
-    (if (not (ch:safe 'ch:ask-job (list T)))
+;;; A failure here used to be swallowed: ch:safe reported it only under
+;;; Debug=1, so if anything went wrong building the dialog the drawing
+;;; simply opened with no pop-up and no explanation.  It now says so.
+(defun ch:begin-with-prompt (safe-context / r)
+  (cond
+    (safe-context
+      (setq r (vl-catch-all-apply 'ch:ask-job (list T)))
+      (if (vl-catch-all-error-p r)
+        (progn
+          (ch:say (strcat "the job pop-up could not run: "
+                          (vl-catch-all-error-message r)))
+          (ch:say "Tracking as UNASSIGNED - CHJOB sets the job, CHDLG tests the pop-up.")
+          (setq *ch-prompt-due* T)
+        )
+      )
       (if (not *ch-active*) (ch:start-session "UNASSIGNED" "" "" ""))
     )
-    (progn
+    (T
       (ch:begin-silently)
       (if *ch-prompt-due*
         (ch:say "Time is being recorded as UNASSIGNED - type CHJOB to put it on a job.")
@@ -350,11 +568,22 @@
     (setq hit (assoc k *ch-modules*))
     (princ (strcat "\n    " (ch:rpad k 12)
                    (cond
-                     ((null hit) "NOT LOADED")
+                     ((null hit)
+                       (if (member k '("Report" "Dashboard"))
+                         "loads on demand" "NOT LOADED"))
                      ((/= (cdr hit) *ch-version*)
                        (strcat (cdr hit) "  <- OUT OF DATE"))
                      (T (cdr hit)))))
   )
+  (princ (strcat "\n  Loaded from  : " (if *ch-mod-dir* *ch-mod-dir* "(unknown)")
+                 (if (and *ch-mod-dir* *ch-home*
+                          (/= (strcase *ch-mod-dir*) (strcase *ch-home*)))
+                   "   [local mirror]" "   [server]")))
+  (princ (strcat "\n  Start-up     : "
+                 (if *ch-t-load*  (strcat (ch:fmt2 *ch-t-load*)  " ms loading modules") "?")
+                 (if *ch-t-start* (strcat ",  " (ch:fmt2 *ch-t-start*) " ms starting the session") "")))
+  (princ (strcat "\n  Reports      : "
+                 (if (ch:reports-ready) "loaded" "load on first use")))
   (princ (strcat "\n  Config file  : " (if file file "(none - built-in defaults)")))
   (princ (strcat "\n  Install home : " (if (ch:home) (ch:home) "(unknown)")))
   (princ (strcat "\n  Log root     : " (ch:cfg-path "LogRoot")

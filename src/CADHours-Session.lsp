@@ -399,7 +399,6 @@
       (ch:accrue)
       (setq end-parts      (ch:parts)
             *ch-last-parts* end-parts)
-      (ch:write-live)
       ;; the session is over, so there is nothing left to ask about.
       ;; Without this, a drawing whose prompt was skipped keeps nagging
       ;; after it has been closed - the CLOSE command itself raises a
@@ -407,12 +406,20 @@
       (setq *ch-active*      nil
             *ch-prompt-due*  nil)
       (ch:log-event "SESSION_END" status)
+      ;; commit first, then drop the live row.  The live row is only
+      ;; rewritten if the commit failed, which saves a write across the
+      ;; share on the path a drawing closes through.
       (if (>= *ch-acc* (float (ch:cfg-int "MinSessionSeconds" 10)))
         (if (ch:commit-session status end-parts)
           (ch:delete-live)
-          (ch:say (strcat "Could not write the session row for job "
-                          *ch-job* " - it is held in the live folder "
-                          "and CHRECOVER will re-file it."))
+          (progn
+            (setq *ch-active* T)
+            (ch:write-live)
+            (setq *ch-active* nil)
+            (ch:say (strcat "Could not write the session row for job "
+                            *ch-job* " - it is held in the live folder "
+                            "and CHRECOVER will re-file it."))
+          )
         )
         (progn
           (ch:dbg "session below MinSessionSeconds - not recorded")
@@ -659,18 +666,34 @@
 ;;; beside it - losing close handling, for instance, with no trace
 ;;; outside a debug line.  One event per reactor keeps a failure to
 ;;; itself, and the failure is now reported rather than whispered.
+;;; Register ONE event on its own reactor.
+;;;
 ;;; EVENT must arrive already quoted.  The alist form this replaced kept
 ;;; the :vlr-... name inside a quote, so it was never evaluated; passing
 ;;; it bare would rely on AutoLISP treating a leading colon as
-;;; self-evaluating, and if it does not, every name becomes nil, no
-;;; reactor registers, and NOTHING is tracked in any drawing.  Quoting at
-;;; the call site is correct either way.
-(defun ch:add-event (maker event callback / r)
+;;; self-evaluating, and if it does not, every name becomes nil and
+;;; nothing is tracked at all.
+;;;
+;;; Event names genuinely differ between releases - AutoCAD 2027 has no
+;;; :vlr-beginQuit on the editor reactor, for instance - and a reactor
+;;; refuses to construct if a name is unknown.  One event per reactor
+;;; keeps such a failure to itself instead of silently removing every
+;;; handler beside it.
+;;;
+;;; REQUIRED says whether losing this event actually costs anything.
+;;; Only those are reported; an optional one that a release does not
+;;; offer is not a problem the user can act on, and saying so on every
+;;; drawing is just noise.
+(defun ch:add-event (maker event callback required / r)
   (setq r (vl-catch-all-apply maker (list nil (list (cons event callback)))))
   (if (vl-catch-all-error-p r)
     (progn
-      (setq *ch-reactor-fails*
-            (cons (vl-princ-to-string event) *ch-reactor-fails*))
+      (if required
+        (setq *ch-reactor-fails*
+              (cons (vl-princ-to-string event) *ch-reactor-fails*))
+        (ch:dbg (strcat "optional event not on this release: "
+                        (vl-princ-to-string event)))
+      )
       nil
     )
     (progn (setq *ch-reactors* (cons r *ch-reactors*)) r)
@@ -683,53 +706,53 @@
         ed                 'vlr-editor-reactor)
 
   ;; commands - the main activity signal
-  (ch:add-event ed ':vlr-commandWillStart 'ch:on-command-start)
-  (ch:add-event ed ':vlr-commandEnded     'ch:on-command-end)
-  (ch:add-event ed ':vlr-commandCancelled 'ch:on-command-end)
-  (ch:add-event ed ':vlr-commandFailed    'ch:on-command-end)
+  (ch:add-event ed ':vlr-commandWillStart 'ch:on-command-start T)
+  (ch:add-event ed ':vlr-commandEnded     'ch:on-command-end   T)
+  (ch:add-event ed ':vlr-commandCancelled 'ch:on-command-end   nil)
+  (ch:add-event ed ':vlr-commandFailed    'ch:on-command-end   nil)
 
   ;; save / close / quit
-  (ch:add-event ed ':vlr-beginSave    'ch:on-save)
-  (ch:add-event ed ':vlr-saveComplete 'ch:on-save-complete)
-  (ch:add-event ed ':vlr-beginClose   'ch:on-close)
-  (ch:add-event ed ':vlr-beginQuit    'ch:on-quit)
+  (ch:add-event ed ':vlr-beginSave    'ch:on-save          nil)
+  (ch:add-event ed ':vlr-saveComplete 'ch:on-save-complete nil)
+  (ch:add-event ed ':vlr-beginClose   'ch:on-close         nil)
+  (ch:add-event ed ':vlr-beginQuit    'ch:on-quit          nil)  ; absent on 2027
 
   ;; the same two off the drawing reactor, for releases where the editor
   ;; reactor does not raise them.  ch:on-save debounces the duplicate.
-  (ch:add-event 'vlr-dwg-reactor ':vlr-beginSave  'ch:on-save)
-  (ch:add-event 'vlr-dwg-reactor ':vlr-beginClose 'ch:on-close)
+  (ch:add-event 'vlr-dwg-reactor ':vlr-beginSave  'ch:on-save  nil)
+  (ch:add-event 'vlr-dwg-reactor ':vlr-beginClose 'ch:on-close nil)
 
   ;; grip edits and Properties-palette changes raise no command, so the
   ;; database reactor is what catches them
   (if (ch:cfg-bool "TrackObjectEdits" T)
     (progn
-      (ch:add-event 'vlr-acdb-reactor ':vlr-objectModified 'ch:on-object)
-      (ch:add-event 'vlr-acdb-reactor ':vlr-objectAppended 'ch:on-object)
-      (ch:add-event 'vlr-acdb-reactor ':vlr-objectErased   'ch:on-object)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectModified 'ch:on-object nil)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectAppended 'ch:on-object nil)
+      (ch:add-event 'vlr-acdb-reactor ':vlr-objectErased   'ch:on-object nil)
     )
   )
 
   ;; double-click editing
-  (ch:add-event 'vlr-mouse-reactor ':vlr-beginDoubleClick 'ch:on-activity)
+  (ch:add-event 'vlr-mouse-reactor ':vlr-beginDoubleClick 'ch:on-activity nil)
 
   ;; optional, off by default: some sysvars change without the user
   ;; doing anything, which would keep the clock running while idle
   (if (ch:cfg-bool "TrackSysVarChanges" nil)
-    (ch:add-event 'vlr-sysvar-reactor ':vlr-sysVarChanged 'ch:on-activity)
+    (ch:add-event 'vlr-sysvar-reactor ':vlr-sysVarChanged 'ch:on-activity nil)
   )
 
   ;; drawing-tab switches, and the authoritative end-of-drawing event
   (ch:add-event 'vlr-docmanager-reactor
-                ':vlr-documentBecameCurrent 'ch:on-doc-switch)
+                ':vlr-documentBecameCurrent 'ch:on-doc-switch T)
   (ch:add-event 'vlr-docmanager-reactor
-                ':vlr-documentToBeDestroyed 'ch:on-doc-destroy)
+                ':vlr-documentToBeDestroyed 'ch:on-doc-destroy T)
 
   (ch:dbg (strcat (itoa (length *ch-reactors*)) " reactor(s) active"))
   (if *ch-reactor-fails*
     (progn
-      (ch:say (strcat "these events are not available on this release: "
+      (ch:say (strcat "these events are missing on this release: "
                       (ch:join (reverse *ch-reactor-fails*) " ")))
-      (ch:say "time will still be tracked, but tell whoever maintains the tracker.")
+      (ch:say "time tracking may be incomplete - please report this.")
     )
   )
   (princ)
@@ -827,7 +850,7 @@
 )
 
 
-(ch:module "Session" "1.2.1")
+(ch:module "Session" "1.3.0")
 
 (princ)
 ;;; ============================================================ EOF

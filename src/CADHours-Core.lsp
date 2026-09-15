@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.2.1")
+(setq *ch-version* "1.3.0")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -31,14 +31,23 @@
   (princ)
 )
 
-;;; Returns (missing-names wrong-version-names) against *ch-version*
+;;; Returns (missing-names wrong-version-names) against *ch-version*.
+;;;
+;;; Report and Dashboard are loaded on demand, so their absence is
+;;; normal and only a version mismatch is worth reporting.
 (defun ch:module-report ( / hit missing bad n)
-  (foreach n '("Core" "Session" "Job" "Report" "Dashboard")
+  (foreach n '("Core" "Session" "Job")
     (setq hit (assoc n *ch-modules*))
     (cond
       ((null hit) (setq missing (cons n missing)))
       ((/= (cdr hit) *ch-version*)
         (setq bad (cons (strcat n " is " (cdr hit)) bad)))
+    )
+  )
+  (foreach n '("Report" "Dashboard")
+    (setq hit (assoc n *ch-modules*))
+    (if (and hit (/= (cdr hit) *ch-version*))
+      (setq bad (cons (strcat n " is " (cdr hit)) bad))
     )
   )
   (list (reverse missing) (reverse bad))
@@ -74,6 +83,22 @@
     )
     r
   )
+)
+
+
+;;; ---- console tables ------------------------------------------------
+
+(defun ch:rule (n / s)
+  (setq s "")
+  (repeat n (setq s (strcat s "-")))
+  s
+)
+
+(defun ch:hdr (title)
+  (princ (strcat "\n\n" (ch:rule 68)
+                 "\n " title
+                 "\n" (ch:rule 68)))
+  (princ)
 )
 
 
@@ -485,69 +510,51 @@
 
 ;;; ---- file locking ------------------------------------------------
 ;;;
-;;; vl-mkdir is the only atomic test-and-set AutoLISP offers: it
-;;; returns nil when the directory already exists.  That makes a
-;;; directory a usable mutex across machines on a network share.
+;;; vl-mkdir is the only atomic test-and-set AutoLISP offers: it returns
+;;; nil when the directory already exists, which makes a directory a
+;;; usable mutex even across machines on a share.
+;;;
+;;; It is barely needed here, though.  A sessions file is named for one
+;;; user on one machine in one month, so it has a single writer in
+;;; normal use; the only collision possible is two AutoCAD instances
+;;; belonging to the same person finishing a drawing in the same moment.
+;;;
+;;; So this takes ONE shot and never waits.  Closing a drawing goes
+;;; through here, and the old version could spin for two seconds against
+;;; the share while the user sat looking at a frozen AutoCAD.  If the
+;;; lock is not free, the caller writes a sidecar file instead - reports
+;;; read the whole folder, so that costs nothing but an extra file.
+;;; Stale locks are cleared by the hourly sweep rather than on the way
+;;; through.
 
-;;; Busy-wait for SECS.  There is no sleep in AutoLISP, and calling
-;;; the DELAY command from inside a reactor is unsafe, so this spins.
-;;; Only ever used for waits measured in tens of milliseconds.
-(defun ch:spin (secs / t0 n)
-  (setq t0 (ch:now) n 0)
-  ;; the iteration cap is a backstop: if the clock ever failed to
-  ;; advance, a bare timing loop would hang AutoCAD with no way out
-  (while (and (< (ch:secs t0 (ch:now)) secs) (< n 2000000))
-    (setq n (1+ n))
-  )
+(defun ch:lock (path / lk)
+  (setq lk (strcat (ch:norm-path path) ".lock"))
+  (if (vl-mkdir lk) lk)
 )
 
-;;; Remove a lock left behind by a crashed session
-(defun ch:break-lock (lk / age)
-  (setq age (ch:file-age (ch:path+ lk "owner.txt")))
-  (if (or (null age) (> age 60.0))
-    (progn
-      (vl-file-delete (ch:path+ lk "owner.txt"))
-      (vl-catch-all-apply 'vl-rmdir (list lk))
-    )
-  )
-)
-
-;;; Try to take the lock guarding PATH.  Returns the lock directory on
-;;; success, nil when it could not be taken within about two seconds.
-(defun ch:lock (path / lk tries got f)
-  (setq lk    (strcat (ch:norm-path path) ".lock")
-        tries 0
-        got   nil)
-  (while (and (not got) (< tries 40))
-    (if (vl-mkdir lk)
-      (setq got T)
-      (progn
-        (if (= tries 8) (ch:break-lock lk))
-        (ch:spin 0.05)
-        (setq tries (1+ tries))
-      )
-    )
-  )
-  (if got
-    (progn
-      (if (setq f (open (ch:path+ lk "owner.txt") "w"))
-        (progn (write-line (ch:str (getvar "LOGINNAME")) f) (close f))
-      )
-      lk
-    )
-  )
-)
-
-;;; Release a lock taken by ch:lock
 (defun ch:unlock (lk)
-  (if lk
-    (progn
-      (vl-file-delete (ch:path+ lk "owner.txt"))
-      (vl-catch-all-apply 'vl-rmdir (list lk))
-    )
-  )
+  (if lk (vl-catch-all-apply 'vl-rmdir (list lk)))
+  (princ)
 )
 
+;;; Remove lock directories left behind by a crash.  Called from the
+;;; throttled sweep, never from a write.
+(defun ch:clear-stale-locks (dir / n d)
+  (setq n 0)
+  (foreach d (ch:subdirs dir)
+    (if (and (> (strlen d) 5)
+             (= (strcase (substr d (- (strlen d) 4))) ".LOCK"))
+      (progn
+        (vl-file-delete (ch:path+ (ch:path+ dir d) "owner.txt"))
+        (if (not (vl-catch-all-error-p
+                   (vl-catch-all-apply 'vl-rmdir (list (ch:path+ dir d)))))
+          (setq n (1+ n))
+        )
+      )
+    )
+  )
+  n
+)
 
 ;;; ---- file writing ------------------------------------------------
 
@@ -582,12 +589,16 @@
 
 ;;; Append LINE to PATH, creating the file with HEADER when it does
 ;;; not exist yet.  Returns T on success.
+;;;
+;;; Deliberately does NOT inspect the existing header.  Checking it
+;;; meant opening the file across the share on every append, and
+;;; correcting it meant reading and rewriting the whole thing - both on
+;;; the path taken while a drawing is closing.  Header migration is a
+;;; cosmetic fix for a file that gained a column, so ch:migrate-headers
+;;; does it from the hourly sweep instead.
 (defun ch:append-line (path line header / f new)
   (ch:mkpath (vl-filename-directory path))
   (setq new (null (findfile path)))
-  (if (and (not new) header (/= (ch:str (ch:first-line path)) header))
-    (ch:safe 'ch:fix-header (list path header))
-  )
   (if (setq f (open path "a"))
     (progn
       (if (and new header) (write-line header f))
@@ -694,11 +705,12 @@
     (cons "NoteLines"          "4")
     (cons "DefaultJob"         "")
     (cons "RememberJobInDwg"   "0")
-    (cons "WriteEventLog"      "1")
+    (cons "WriteEventLog"      "0")
     (cons "TrackObjectEdits"   "1")
     (cons "TrackSysVarChanges" "0")
     (cons "ObjectEventStride"  "20")
     (cons "AutoRecover"        "1")
+    (cons "SweepMinutes"       "60")
     (cons "StaleLiveHours"     "8")
     (cons "MruCount"           "12")
     (cons "Debug"              "0")
@@ -851,28 +863,85 @@
 ;;; The configured share, or the local spool folder when the share is
 ;;; not reachable right now.  A laptop that is off the network keeps
 ;;; logging locally and the rows are pushed up on the next start.
+;;;
+;;; Cached for a few minutes.  Resolving it touches the network, and it
+;;; is asked for on every heartbeat, every event-log line and every
+;;; commit - so left uncached it turned one drawing session into a
+;;; steady trickle of stat calls against the share.
 (defun ch:root ( / root)
-  (setq root (ch:cfg-path "LogRoot"))
-  (cond
-    ((and (/= root "") (or (ch:dir-p root) (ch:mkpath root))) root)
-    (T
-      (setq root (ch:cfg-path "LocalSpool"))
-      (ch:mkpath root)
+  (if (and *ch-root-cache* *ch-root-when*
+           (< (abs (ch:secs *ch-root-when* (ch:now))) 300.0))
+    *ch-root-cache*
+    (progn
+      (setq root (ch:cfg-path "LogRoot"))
+      (cond
+        ((and (/= root "") (or (ch:dir-p root) (ch:mkpath root)))
+          (setq *ch-root-spooling* nil))
+        (T
+          (setq root (ch:cfg-path "LocalSpool"))
+          (ch:mkpath root)
+          (setq *ch-root-spooling* T)
+        )
+      )
+      (setq *ch-root-cache* root
+            *ch-root-when*  (ch:now))
       root
     )
   )
 )
 
-;;; True when we are currently writing to the fallback spool
-(defun ch:spooling-p ( / root)
-  (setq root (ch:cfg-path "LogRoot"))
-  (not (and (/= root "") (ch:dir-p root)))
+;;; True when we are currently writing to the fallback spool.  Reuses
+;;; the answer ch:root already worked out rather than asking the
+;;; network a second time.
+(defun ch:spooling-p ()
+  (ch:root)
+  *ch-root-spooling*
 )
 
 (defun ch:sessions-dir (root month) (ch:path+ (ch:path+ root "sessions") month))
 (defun ch:live-dir     (root)       (ch:path+ root "live"))
 (defun ch:events-dir   (root day)   (ch:path+ (ch:path+ root "events") day))
 (defun ch:reports-dir  (root)       (ch:path+ root "reports"))
+
+
+;;; ---- housekeeping throttle ------------------------------------------
+;;;
+;;; Re-filing crashed sessions and pushing up spooled rows both walk the
+;;; share.  Doing that every time a drawing opens is the single most
+;;; visible delay on a busy morning, and it is pointless: once an hour
+;;; per machine settles anything that needs settling.  The marker is a
+;;; local file, so the check itself costs nothing.
+
+(defun ch:sweep-marker ()
+  (ch:path+ (ch:cfg-path "LocalSpool") "last-sweep.txt")
+)
+
+(defun ch:sweep-due ( / mins age)
+  (setq mins (max 0 (ch:cfg-int "SweepMinutes" 60)))
+  (if (= mins 0)
+    T
+    (progn
+      (setq age (ch:file-age (ch:sweep-marker)))
+      (if (or (null age) (> age (* 60.0 (float mins)))) T nil)
+    )
+  )
+)
+
+;;; Bring every sessions file in DIR up to the current header.
+(defun ch:migrate-headers (dir header / n f)
+  (setq n 0)
+  (foreach f (ch:files dir "*.csv")
+    (if (ch:safe 'ch:fix-header (list f header)) (setq n (1+ n)))
+  )
+  n
+)
+
+(defun ch:sweep-done ( / f)
+  (setq f (ch:sweep-marker))
+  (ch:mkpath (vl-filename-directory f))
+  (ch:write-line-file f (ch:stamp (ch:parts)) nil)
+  (princ)
+)
 
 
 ;;; ---- identity ----------------------------------------------------
@@ -1016,7 +1085,7 @@
 )
 
 
-(ch:module "Core" "1.2.1")
+(ch:module "Core" "1.3.0")
 
 (princ)
 ;;; ============================================================ EOF

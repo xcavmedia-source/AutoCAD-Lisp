@@ -224,19 +224,6 @@
 
 ;;; ---- printing -----------------------------------------------------------
 
-(defun ch:rule (n / s)
-  (setq s "")
-  (repeat n (setq s (strcat s "-")))
-  s
-)
-
-(defun ch:hdr (title)
-  (princ (strcat "\n\n" (ch:rule 68)
-                 "\n " title
-                 "\n" (ch:rule 68)))
-  (princ)
-)
-
 ;;; Print a grouped table.  LABEL heads the key column.
 (defun ch:print-group (label groups / total g)
   (setq total 0.0)
@@ -493,7 +480,7 @@
 )
 
 
-(ch:module "Report" "1.2.1")
+(ch:module "Report" "1.3.0")
 
 (princ)
 ;;; ============================================================ EOF
