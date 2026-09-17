@@ -191,7 +191,53 @@
     margin-left:.4rem; vertical-align:middle;
   }
 
-  /* ============================= POP-UP MOCKUP ============================= */
+  /* ============================= WINDOWS-ACCURATE SCREENSHOT ============================= */
+  /* This recreates the actual OS-chrome dialog, so — unlike the rest of the
+     page — its colors are hardcoded rather than pulled from the theme
+     tokens: it depicts a fixed Windows dialog, not something that should
+     shift with light/dark mode. */
+  .win-shot{ max-width:412px; margin:0 auto 1rem; }
+  .win-shot-label{
+    font-family:var(--font-mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); text-align:center; margin-bottom:.55rem;
+  }
+  .win-dialog{
+    background:#F0F0F0; border:1px solid #9C9C9C; border-radius:2px; overflow:hidden;
+    box-shadow:0 14px 32px -12px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.18);
+    font-family:'Segoe UI',Tahoma,Arial,system-ui,sans-serif; color:#1E1E1E;
+  }
+  .win-titlebar{
+    background:#F0F0F0; border-bottom:1px solid #D6D6D6; padding:.42rem .6rem;
+    font-size:12.5px; font-weight:600; display:flex; align-items:center; justify-content:space-between;
+  }
+  .win-titlebar .win-close{ font-size:10.5px; color:#555; width:17px; height:17px; display:grid; place-items:center; }
+  .win-body{ padding:.6rem .75rem .75rem; }
+  .win-drawingname{ font-size:12px; font-weight:600; margin-bottom:.08rem; word-break:break-all; }
+  .win-drawingpath{ font-size:10.8px; color:#444; margin-bottom:.6rem; word-break:break-all; }
+  .win-group{ border:1px solid #ACACAC; border-radius:1px; margin:0 0 .55rem; padding:.5rem .55rem .45rem; }
+  .win-group legend{ font-size:11.3px; padding:0 .3rem; color:#1E1E1E; }
+  .win-row{ display:grid; grid-template-columns:104px 1fr; align-items:center; gap:.4rem; margin-bottom:.3rem; }
+  .win-row label{ font-size:11.6px; }
+  .win-input,.win-select{
+    background:#fff; border:1px solid #7F9DB9; border-radius:1px; font-size:11.8px; padding:.18rem .32rem; min-height:1.4em;
+  }
+  .win-select{ display:flex; justify-content:space-between; align-items:center; }
+  .win-caret{ color:#555; font-size:8.5px; }
+  .win-sel{ background:#0078D7; color:#fff; padding:0 1px; }
+  .win-hint{ font-size:10.8px; color:#1257A6; line-height:1.4; margin-top:.15rem; }
+  .win-notesbox{ background:#fff; border:1px solid #7F9DB9; border-radius:1px; height:58px; margin-bottom:.35rem; }
+  .win-addrow{ display:grid; grid-template-columns:30px 1fr auto auto; gap:.28rem; align-items:center; }
+  .win-addrow label{ font-size:11.6px; }
+  .win-btn{
+    background:#E1E1E1; border:1px solid #ADADAD; border-radius:2px; font-size:11.2px; text-align:center;
+    padding:.22rem .5rem; white-space:nowrap;
+  }
+  .win-caption2{ font-size:10.3px; color:#1257A6; margin-top:.28rem; }
+  .win-actions{ display:flex; justify-content:center; gap:.5rem; margin-top:.55rem; }
+  .win-actions .win-btn{ min-width:72px; padding:.3rem .6rem; }
+  .win-btn-default{ border-color:#0078D7; box-shadow:0 0 0 1px #0078D7 inset; font-weight:600; }
+
+  /* ============================= POP-UP MOCKUP (practice version) ============================= */
   .demo-shell{ display:grid; grid-template-columns:minmax(0,340px) 1fr; gap:1.4rem; align-items:start; }
   @media (max-width:760px){ .demo-shell{ grid-template-columns:1fr; } }
 
@@ -522,7 +568,7 @@
           <div class="step-rail"><div class="step-dot">6</div></div>
           <div class="step-body">
             <h3>Close the drawing</h3>
-            <p>The session is banked to the record the moment it closes. If it's your only open drawing and the total was under about ten seconds, it isn't recorded at all — opening a file just to glance at it doesn't clutter anyone's timesheet.</p>
+            <p>The session is banked to the record the moment it closes. If it's your only open drawing and the total was under about ten seconds, it isn't recorded at all — opening a file just to glance at it doesn't add noise to anyone's hours.</p>
           </div>
         </div>
       </div>
@@ -535,8 +581,48 @@
 
     <!-- 03 — THE POP-UP (interactive) ------------------------------------------------------------------------------------------------------------>
     <section class="sheet" id="popup" data-title="The Pop-up">
-      <div class="sheet-head"><span class="sheet-no">03</span><h2>The Pop-up</h2><span class="sub">Try it — this is a faithful copy of the real dialog</span></div>
-      <p class="lede">Four fields, one decision to make. Fill this one in the same way you would in AutoCAD; it behaves the same way, right down to the validation.</p>
+      <div class="sheet-head"><span class="sheet-no">03</span><h2>The Pop-up</h2></div>
+      <p class="lede">Below is what actually appears when a drawing opens. Under it is the same set of fields, restyled for this page so you can practice with them — validation and all.</p>
+
+      <div class="win-shot">
+        <div class="win-shot-label">What appears in AutoCAD</div>
+        <div class="win-dialog" role="img" aria-label="The CAD Hours Tracker dialog as it appears in AutoCAD: drawing name and folder path, a job number field, a recent-jobs dropdown, a project-manager dropdown, a task/phase field, a hint line about the job number format, a notes area with an Add field and Notepad and Clear buttons, and OK and Skip buttons.">
+          <div class="win-titlebar">CAD Hours Tracker<span class="win-close">✕</span></div>
+          <div class="win-body">
+            <div class="win-drawingname">P22307_07.14.26_ADC_IAD06_R04.dwg</div>
+            <div class="win-drawingpath">J:\1 Architectural Projects\P22307 - ADC - IAD06\5-Architectural Shop</div>
+
+            <fieldset class="win-group">
+              <legend>Charge this time to</legend>
+              <div class="win-row"><label>Job number:</label><div class="win-input"><span class="win-sel">P22307</span></div></div>
+              <div class="win-row"><label>Recent jobs:</label><div class="win-select">P22307<span class="win-caret">▾</span></div></div>
+              <div class="win-row"><label>Project manager:</label><div class="win-select">Nick Mihal<span class="win-caret">▾</span></div></div>
+              <div class="win-row"><label>Task / phase:</label><div class="win-input">&nbsp;</div></div>
+              <div class="win-hint">P followed by five digits, e.g. P10432&nbsp;&nbsp;Suggested job comes from last used on this</div>
+            </fieldset>
+
+            <fieldset class="win-group">
+              <legend>Notes (optional)</legend>
+              <div class="win-notesbox"></div>
+              <div class="win-addrow">
+                <label>Add:</label><div class="win-input">&nbsp;</div>
+                <div class="win-btn">Notepad…</div><div class="win-btn">Clear</div>
+              </div>
+              <div class="win-caption2">Enter adds a line.&nbsp; Click a line to edit it.</div>
+            </fieldset>
+
+            <div class="win-actions">
+              <div class="win-btn win-btn-default">OK</div>
+              <div class="win-btn">Skip</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note tip" style="max-width:412px; margin-left:auto; margin-right:auto;">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V3l9 9-4 1 3 6-2 1-3-6-3 3Z"/></svg>
+        <div><div class="t">Below: try the same fields</div><p>Same behavior, restyled to fit this page — pick a job, watch the validation, click OK or Skip and see exactly what gets recorded.</p></div>
+      </div>
 
       <div class="demo-shell">
         <div class="dlg">
@@ -550,6 +636,15 @@
                 <label for="d-job">Job number</label>
                 <input id="d-job" class="mono" maxlength="10" value="P10432" autocomplete="off">
                 <div class="hint" id="d-job-hint"></div>
+              </div>
+              <div class="fld">
+                <label for="d-recent">Recent jobs</label>
+                <select id="d-recent">
+                  <option value="">(pick to fill job number)</option>
+                  <option value="P10432">P10432</option>
+                  <option value="P10517">P10517</option>
+                  <option value="P10603">P10603</option>
+                </select>
               </div>
               <div class="fld">
                 <label for="d-mgr">Project manager</label>
@@ -591,7 +686,7 @@
           <div class="card pad">
             <div class="field-map">
               <div class="fm-row"><span class="fm-k">Job number</span><span class="fm-v">Must match <code class="k">P#####</code> — five digits, no more, no fewer. Typed wrong, OK simply won't close until it's fixed.</span></div>
-              <div class="fm-row"><span class="fm-k">Recent jobs</span><span class="fm-v">Not shown here, but the real dialog keeps a dropdown of jobs you've used recently, so most days it's a click rather than typing.</span></div>
+              <div class="fm-row"><span class="fm-k">Recent jobs</span><span class="fm-v">A shortcut — pick one and it fills the job number above, same as clicking a recent job in AutoCAD.</span></div>
               <div class="fm-row"><span class="fm-k">Project manager</span><span class="fm-v">Maintained by your CAD manager in a plain list. Leave it blank if you're not sure — it isn't required.</span></div>
               <div class="fm-row"><span class="fm-k">Skip</span><span class="fm-v">Time is still tracked, filed as <code class="k">UNASSIGNED</code>. Nothing is lost — set the job later with <code class="k">CHJOB</code>.</span></div>
             </div>
@@ -824,6 +919,7 @@
   ================================================================ */
   var jobInput = document.getElementById('d-job');
   var jobHint  = document.getElementById('d-job-hint');
+  var recentSel = document.getElementById('d-recent');
   var mgrSel   = document.getElementById('d-mgr');
   var taskIn   = document.getElementById('d-task');
   var notesPanel = document.getElementById('d-notes-panel');
@@ -842,6 +938,9 @@
     return ok;
   }
   jobInput.addEventListener('input', validateJob);
+  recentSel.addEventListener('change', function(){
+    if(recentSel.value){ jobInput.value = recentSel.value; validateJob(); jobInput.focus(); }
+  });
   validateJob();
 
   function renderNotes(){
@@ -983,7 +1082,7 @@
     {name:'CHTODAY', cat:'reports', catLabel:'Reports', short:'Your hours today, broken down by job.',
       detail:'A quick command-line summary of what you’ve logged so far today, split by job number.'},
     {name:'CHWEEK', cat:'reports', catLabel:'Reports', short:'Your hours this week, by day and by job.',
-      detail:'Same idea as CHTODAY, over the current week, so you can sanity-check before a Friday timesheet.'},
+      detail:'Same idea as CHTODAY, over the current week, so you can sanity-check your hours before the week closes out.'},
     {name:'CHJOBHOURS', cat:'reports', catLabel:'Reports', short:'Everything logged against one job number.',
       detail:'Prompts for a job number, then totals every hour anyone has logged to it — useful for checking a job’s running total before a client call.'},
     {name:'CHFIND', cat:'reports', catLabel:'Reports', short:'Search sessions by user, job, or date range.',
@@ -1069,7 +1168,7 @@
      a:'<p>Each is tracked completely independently. Only the drawing you’re actually clicked into accrues time — switch tabs and that one picks up while the other pauses. Check any of them individually with <code class="k">CHSTATUS</code>.</p>'},
     {q:'I stepped away for a meeting or a site visit',
      a:'<p>Nothing to do beforehand. After five minutes of no activity the clock pauses on its own, crediting the first five minutes and writing off the rest — see the demo on Sheet 04. Coming back and doing anything at all resumes it.</p>'},
-    {q:'I want to double-check my hours before submitting a timesheet',
+    {q:'I want to double-check my hours before they get submitted',
      a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> for a quick command-line total. For something to actually look at and filter, <code class="k">CHDASH</code> opens a full searchable page in your browser.</p>'},
     {q:'A drawing got saved into the wrong job folder',
      a:'<p>Fix the job on the drawing itself with <code class="k">CHJOB</code> — the tracker only adopts a folder’s job automatically the moment a save happens, so correcting it there is enough going forward. If time already logged needs correcting too, flag it to your CAD manager; the records are plain CSV files and can be edited directly if needed.</p>'}
