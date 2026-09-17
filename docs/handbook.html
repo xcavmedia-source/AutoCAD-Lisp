@@ -813,8 +813,8 @@
           <div class="qr-cmdlist">
             <div class="r"><code class="k">CHTODAY</code><span>Today, by job</span></div>
             <div class="r"><code class="k">CHWEEK</code><span>This week, by day &amp; job</span></div>
-            <div class="r"><code class="k">CHJOBHOURS</code><span>Everything on one job</span></div>
-            <div class="r"><code class="k">CHFIND</code><span>Search by period, user, job</span></div>
+            <div class="r"><code class="k">CHJOBHOURS</code><span>Your hours on one job</span></div>
+            <div class="r"><code class="k">CHFIND</code><span>Search your hours by period, job</span></div>
           </div>
         </div>
         <div class="qr-cell">
@@ -1083,10 +1083,10 @@
       detail:'A quick command-line summary of what you’ve logged so far today, split by job number.'},
     {name:'CHWEEK', cat:'reports', catLabel:'Reports', short:'Your hours this week, by day and by job.',
       detail:'Same idea as CHTODAY, over the current week, so you can sanity-check your hours before the week closes out.'},
-    {name:'CHJOBHOURS', cat:'reports', catLabel:'Reports', short:'Everything logged against one job number.',
-      detail:'Prompts for a job number, then totals every hour anyone has logged to it — useful for checking a job’s running total before a client call.'},
-    {name:'CHFIND', cat:'reports', catLabel:'Reports', short:'Search sessions by user, job, or date range.',
-      detail:'The general-purpose search — narrower or broader than CHTODAY/CHWEEK/CHJOBHOURS when you need a specific slice.'},
+    {name:'CHJOBHOURS', cat:'reports', catLabel:'Reports', short:'Your hours against one job number.',
+      detail:'Prompts for a job number, then totals your time on it, broken down by manager, month and drawing — useful for seeing what you have put into a job before a review. A total across the whole team is a report your CAD manager pulls, so depending on how your office has the tracker set up you may see just your own share here.'},
+    {name:'CHFIND', cat:'reports', catLabel:'Reports', short:'Search your sessions by job or date range.',
+      detail:'The general-purpose search — narrower or broader than CHTODAY/CHWEEK/CHJOBHOURS when you need a specific slice. It searches your own hours; pulling a report across the whole team is something your CAD manager does.'},
     {name:'CHREPORT', cat:'reports', catLabel:'Reports', short:'A guided report with the grouping of your choice.',
       detail:'Walks through a few prompts (period, filter, grouping) and prints a formatted summary — the one to reach for before asking your CAD manager to pull something custom.'},
     {name:'CHEXPORT', cat:'reports', catLabel:'Reports', short:'Write matching sessions out to a CSV file.',
@@ -1165,7 +1165,7 @@
     {q:'I stepped away for a meeting or a site visit',
      a:'<p>Nothing to do beforehand. After five minutes of no activity the clock pauses on its own, crediting the first five minutes and writing off the rest — see the demo on Sheet 04. Coming back and doing anything at all resumes it.</p>'},
     {q:'I want to double-check my hours before they get submitted',
-     a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> gives a quick command-line total. For a specific job or a wider date range, <code class="k">CHFIND</code> lets you filter by period, user and job.</p>'},
+     a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> gives a quick command-line total. For a specific job or a wider date range, <code class="k">CHFIND</code> lets you filter your own hours by period and job.</p>'},
     {q:'A drawing got saved into the wrong job folder',
      a:'<p>Move the drawing into the correct job’s folder — in Explorer, or with Save As from inside AutoCAD — rather than just correcting the job number with CHJOB. The tracker re-reads the folder the moment that save happens and adopts the right job automatically, which is what keeps the file’s location and its billing record pointing at the same place. If time was already logged under the wrong job before the move, flag it to your CAD manager; the records are plain CSV files and can be corrected directly if needed.</p>'}
   ];

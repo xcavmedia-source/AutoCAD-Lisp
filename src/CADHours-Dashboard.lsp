@@ -217,6 +217,13 @@
 
 ;;; ---- command ---------------------------------------------------------------
 
+;;; Said to anyone not on the AdminUsers list.  Names what they CAN run, so
+;;; the refusal ends with somewhere to go rather than just a no.
+(defun ch:dash-denied ()
+  (ch:say "The dashboard covers everyone's hours, so it is limited to the CAD manager on this install.")
+  (ch:say "For your own hours: CHTODAY, CHWEEK, CHJOBHOURS, or CHFIND for a date range.")
+)
+
 (defun c:CHDASH ( / *error*)
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
@@ -226,10 +233,7 @@
   )
   (ch:cfg-load)
   (if (not (ch:is-admin))
-    (progn
-      (ch:say "The shared dashboard is limited to your CAD manager on this install.")
-      (ch:say "CHTODAY, CHWEEK and CHJOBHOURS cover your own hours from the command line.")
-    )
+    (ch:dash-denied)
     (ch:dash-run)
   )
   (princ)
@@ -285,10 +289,7 @@
 (defun c:CHDASHALL ()
   (ch:cfg-load)
   (if (not (ch:is-admin))
-    (progn
-      (ch:say "The shared dashboard is limited to your CAD manager on this install.")
-      (ch:say "CHTODAY, CHWEEK and CHJOBHOURS cover your own hours from the command line.")
-    )
+    (ch:dash-denied)
     (ch:dashall-run)
   )
   (princ)
@@ -319,7 +320,7 @@
 )
 
 
-(ch:module "Dashboard" "1.4.0")
+(ch:module "Dashboard" "1.4.1")
 
 (princ)
 ;;; ============================================================ EOF

@@ -344,7 +344,7 @@
   (princ)
 )
 
-(defun c:CHJOBHOURS ( / *error* job rows)
+(defun c:CHJOBHOURS ( / *error* job rows all)
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
       (princ (strcat "\n** CADHours: " msg))
@@ -354,13 +354,23 @@
   (ch:cfg-load)
   (setq job (ch:trim (getstring T "\nJob number (wildcards allowed): ")))
   (if (= job "") (setq job "*"))
+  ;; A job total across every user is a management number, so it answers to
+  ;; the same AdminUsers list as the dashboard.  Everyone else gets their own
+  ;; contribution to the job, which is what a drafter actually needs.
+  (setq all (ch:is-admin))
   (setq rows (ch:filter (ch:load-rows "0000-01-01" "9999-12-31")
-                        (list (cons "job" job))))
-  (ch:hdr (strcat "Job hours - " job))
+                        (if all
+                          (list (cons "job" job))
+                          (list (cons "job" job) (cons "user" (ch:user))))))
+  (ch:hdr (if all
+            (strcat "Job hours - " job)
+            (strcat "My hours on job - " job " - " (ch:user))))
   (if (null rows)
-    (princ "\n No time recorded against that job yet.")
+    (princ (if all
+             "\n No time recorded against that job yet."
+             "\n You have no time recorded against that job yet."))
     (progn
-      (ch:print-group "User"    (ch:group rows 'ch:r-user))
+      (if all (ch:print-group "User" (ch:group rows 'ch:r-user)))
       (ch:print-group "Manager" (ch:group rows 'ch:r-mgr))
       (ch:print-group "Month"   (ch:group-sorted rows 'ch:r-month))
       (ch:print-group "Drawing" (ch:group rows 'ch:r-dwg))
@@ -377,10 +387,15 @@
     (princ)
   )
   (ch:cfg-load)
-  (setq rng  (ch:parse-range
-               (getstring T "\nPeriod [date | TODAY | WEEK | MONTH | ALL | n days] <TODAY>: "))
-        user (ch:trim (getstring T (strcat "\nUser <" (ch:user) ", * for all>: ")))
-        job  (ch:trim (getstring T "\nJob number <*>: ")))
+  (setq rng (ch:parse-range
+              (getstring T "\nPeriod [date | TODAY | WEEK | MONTH | ALL | n days] <TODAY>: ")))
+  ;; Searching other people's rows answers to the same AdminUsers list as the
+  ;; dashboard.  For everyone else the search is fixed to their own hours, and
+  ;; the prompt is skipped rather than asked and then quietly overridden.
+  (setq user (if (ch:is-admin)
+               (ch:trim (getstring T (strcat "\nUser <" (ch:user) ", * for all>: ")))
+               ""))
+  (setq job (ch:trim (getstring T "\nJob number <*>: ")))
   (if (= user "") (setq user (ch:user)))
   (if (= job  "") (setq job  "*"))
   (setq rows (ch:filter (ch:load-rows (car rng) (cadr rng))
@@ -480,7 +495,7 @@
 )
 
 
-(ch:module "Report" "1.4.0")
+(ch:module "Report" "1.4.1")
 
 (princ)
 ;;; ============================================================ EOF

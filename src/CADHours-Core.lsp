@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.4.0")
+(setq *ch-version* "1.4.1")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -991,7 +991,7 @@
 ;;; Left blank (the default) nothing is restricted, so a small office
 ;;; that trusts everyone equally sees no change at all.
 
-(defun ch:admin-list ( / raw parts p out)
+(defun ch:admin-list ( / raw p out)
   (setq raw (ch:cfg "AdminUsers"))
   (if (/= (ch:trim raw) "")
     (progn
@@ -1005,10 +1005,16 @@
   (reverse out)
 )
 
-;;; T when AdminUsers is blank (nobody restricted) or this user is on it
-(defun ch:is-admin ( / list)
-  (setq list (ch:admin-list))
-  (if (null list) T (member (ch:user) list))
+;;; T when AdminUsers is blank (nobody restricted) or this user is on it.
+;;;
+;;; The local is deliberately not called "list": localising a symbol in
+;;; AutoLISP binds it for the whole dynamic extent of the call, and there
+;;; is only one binding cell per symbol, so a local named "list" makes the
+;;; built-in unavailable to everything this function reaches - including
+;;; ch:cfg-defaults, which is built with (list ...).
+(defun ch:is-admin ( / who)
+  (setq who (ch:admin-list))
+  (if (null who) T (member (ch:user) who))
 )
 
 
@@ -1111,15 +1117,15 @@
   )
 )
 
-(defun ch:mru-add (job / lst max)
+(defun ch:mru-add (job / lst cap)
   (setq job (ch:trim job))
   (if (/= job "")
     (progn
-      (setq max (ch:cfg-int "MruCount" 12))
+      (setq cap (ch:cfg-int "MruCount" 12))
       (setq lst (cons job (vl-remove-if
                             '(lambda (j) (= (strcase j) (strcase job)))
                             (ch:mru-get))))
-      (if (> (length lst) max)
+      (if (> (length lst) cap)
         (setq lst (reverse (cdr (reverse lst))))
       )
       (vl-registry-write (ch:mru-key) "RecentJobs" (ch:join lst "|"))
@@ -1135,7 +1141,7 @@
 )
 
 
-(ch:module "Core" "1.4.0")
+(ch:module "Core" "1.4.1")
 
 (princ)
 ;;; ============================================================ EOF

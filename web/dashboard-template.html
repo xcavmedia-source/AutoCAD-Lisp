@@ -233,8 +233,11 @@
   function to12h(stamp) {
     // stamp is "YYYY-MM-DD HH:MM:SS" - pull the hour/minute straight out
     // rather than parsing a Date, so it reads exactly what was logged
-    // regardless of the viewer's own time zone.
-    var hh = +stamp.slice(11, 13), mm = stamp.slice(14, 16);
+    // regardless of the viewer's own time zone.  Anything shorter than a
+    // full stamp reads as blank rather than as a plausible-looking time.
+    var s = String(stamp == null ? "" : stamp);
+    if (s.length < 16) return "";
+    var hh = +s.slice(11, 13), mm = s.slice(14, 16);
     if (isNaN(hh)) return "";
     var ap = hh >= 12 ? "PM" : "AM", h12 = hh % 12 || 12;
     return h12 + ":" + mm + " " + ap;
@@ -432,9 +435,12 @@
   });
   var DL_COLS = COLS.filter(function (c) { return c !== "idle"; });
   $("dlDetail").addEventListener("click", function () {
+    // Stamps export as logged, not as the 12-hour text on screen: the CSV is
+    // what gets sorted and totalled in a spreadsheet, and "2:15 PM" throws
+    // away the date and seconds that the full stamp still carries.
     download("cadhours-sessions.csv", csv(
       [DL_COLS].concat(lastRows.map(function (r) {
-        return DL_COLS.map(function (c) { return c === "start" || c === "end" ? to12h(r[c]) : r[c]; });
+        return DL_COLS.map(function (c) { return r[c]; });
       }))));
   });
 
