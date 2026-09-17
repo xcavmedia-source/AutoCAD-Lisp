@@ -1,0 +1,1116 @@
+<title>CAD Hours Handbook</title>
+<meta name="description" content="How the AutoCAD job-hours tracker works day to day, with a live pop-up mockup, an idle-timer demo, and a full command reference.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============================= TOKENS ============================= */
+  :root{
+    --paper:#F6F7F3; --surface:#FFFFFF; --surface-2:#EDEFE8;
+    --ink:#1C2430; --ink-soft:#57616B; --ink-faint:#8A93A0;
+    --line:#D9DED0; --line-strong:#B9C0AD;
+    --blue:#1D5FA8; --blue-ink:#123E70; --blue-soft:#E6EEF7;
+    --red:#C1392B; --red-ink:#7C2119; --red-soft:#FBEAE6;
+    --green:#2E7A50; --green-ink:#1D5236; --green-soft:#E7F3EB;
+    --amber:#A5680B; --amber-ink:#6E4507; --amber-soft:#FBF1E1;
+    --shadow: 0 1px 2px rgba(28,36,48,.06), 0 8px 24px -12px rgba(28,36,48,.18);
+    --radius: 3px;
+    --font-display:'Big Shoulders Display',system-ui,sans-serif;
+    --font-body:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+    --font-mono:'IBM Plex Mono',ui-monospace,'SF Mono',Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14171A; --surface:#1B1F23; --surface-2:#21262B;
+      --ink:#E9EBE6; --ink-soft:#A8B0B8; --ink-faint:#707880;
+      --line:#2B3136; --line-strong:#3A4147;
+      --blue:#6FA8DC; --blue-ink:#BFE0FF; --blue-soft:#1E2C3B;
+      --red:#E2695C; --red-ink:#FFD3CC; --red-soft:#33211E;
+      --green:#6FC08B; --green-ink:#CFEFDA; --green-soft:#1C2C22;
+      --amber:#D9A441; --amber-ink:#FFE6B8; --amber-soft:#332A17;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14171A; --surface:#1B1F23; --surface-2:#21262B;
+    --ink:#E9EBE6; --ink-soft:#A8B0B8; --ink-faint:#707880;
+    --line:#2B3136; --line-strong:#3A4147;
+    --blue:#6FA8DC; --blue-ink:#BFE0FF; --blue-soft:#1E2C3B;
+    --red:#E2695C; --red-ink:#FFD3CC; --red-soft:#33211E;
+    --green:#6FC08B; --green-ink:#CFEFDA; --green-soft:#1C2C22;
+    --amber:#D9A441; --amber-ink:#FFE6B8; --amber-soft:#332A17;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  /* ============================= BASE ============================= */
+  *,*::before,*::after{box-sizing:border-box}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:var(--font-body); font-size:15px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  body{ padding-inline:0; }
+  h1,h2,h3,h4{ font-family:var(--font-display); font-weight:700; text-transform:uppercase;
+    letter-spacing:.01em; text-wrap:balance; margin:0; color:var(--ink); }
+  p{ margin:0; }
+  a{ color:var(--blue); }
+  code,.mono{ font-family:var(--font-mono); }
+  ::selection{ background:var(--blue-soft); }
+  button{ font-family:inherit; }
+  :focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
+  .sr-only{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+
+  /* thin technical scrollbar for overflow strips */
+  .hscroll{ overflow-x:auto; scrollbar-width:thin; }
+
+  /* ============================= TITLE BLOCK (HEADER) ============================= */
+  .titleblock{
+    position:sticky; top:env(safe-area-inset-top,0px); z-index:40;
+    background:var(--surface); border-bottom:2px solid var(--ink);
+    display:flex; align-items:stretch; flex-wrap:wrap;
+  }
+  .titleblock-main{
+    flex:1 1 320px; display:flex; align-items:center; gap:.9rem;
+    padding:.75rem 1.1rem; border-right:1px solid var(--line);
+    min-width:0;
+  }
+  .titleblock-mark{
+    width:40px; height:40px; flex:none; border:2px solid var(--ink); border-radius:50%;
+    display:grid; place-items:center; position:relative;
+  }
+  .titleblock-mark svg{ width:22px; height:22px; stroke:var(--ink); }
+  .titleblock-text{ min-width:0; }
+  .titleblock-text .kicker{
+    font-family:var(--font-mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink-faint);
+  }
+  .titleblock-text h1{ font-size:clamp(1.25rem,3.4vw,1.7rem); line-height:1.05; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .titleblock-cells{ display:flex; }
+  .tb-cell{
+    display:flex; flex-direction:column; justify-content:center; gap:.15rem;
+    padding:.6rem 1rem; border-right:1px solid var(--line); min-width:104px;
+  }
+  .tb-cell:last-child{ border-right:none; }
+  .tb-cell .k{ font-family:var(--font-mono); font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-faint); }
+  .tb-cell .v{ font-family:var(--font-mono); font-size:12.5px; font-weight:600; color:var(--ink); }
+  .theme-toggle{
+    display:flex; align-items:center; gap:.3rem; padding:.6rem 1rem; border-left:1px solid var(--line);
+  }
+  .theme-toggle button{
+    border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-soft);
+    width:30px; height:30px; border-radius:var(--radius); cursor:pointer; display:grid; place-items:center;
+  }
+  .theme-toggle button[aria-pressed="true"]{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .theme-toggle svg{ width:15px; height:15px; }
+
+  /* ============================= SHELL / NAV RAIL ============================= */
+  .shell{ display:flex; align-items:flex-start; max-width:1180px; margin:0 auto; }
+  .railwrap{
+    position:sticky; top:calc(env(safe-area-inset-top,0px) + 66px);
+    flex:none; width:216px; padding:1.4rem 0 3rem 1rem;
+    max-height:calc(100vh - 66px); overflow-y:auto;
+  }
+  nav.rail{ display:flex; flex-direction:column; }
+  .rail button{
+    all:unset; cursor:pointer; display:flex; align-items:center; gap:.55rem;
+    font-family:var(--font-mono); font-size:12.5px; font-weight:500; color:var(--ink-soft);
+    padding:.5rem .65rem .5rem .1rem; border-left:3px solid transparent;
+    border-bottom:1px solid var(--line);
+  }
+  .rail button .num{ color:var(--ink-faint); font-variant-numeric:tabular-nums; width:1.4em; flex:none; }
+  .rail button:hover{ color:var(--ink); background:var(--surface-2); }
+  .rail button[aria-current="true"]{
+    color:var(--blue-ink); border-left-color:var(--blue); background:var(--blue-soft); font-weight:600;
+  }
+  .rail-foot{ margin-top:1rem; padding:.75rem .65rem; border-top:1px dashed var(--line-strong); }
+  .rail-foot p{ font-size:11.5px; color:var(--ink-faint); line-height:1.55; }
+
+  .mobile-rail{ display:none; }
+
+  main{ flex:1 1 auto; min-width:0; padding:1.6rem 1.2rem 4rem; }
+
+  /* ============================= SHEETS ============================= */
+  .sheet{ margin-bottom:2.4rem; scroll-margin-top:120px; }
+  .sheet-head{
+    display:flex; align-items:baseline; gap:.7rem; padding-bottom:.5rem;
+    border-bottom:2px solid var(--ink); margin-bottom:1.1rem; flex-wrap:wrap;
+  }
+  .sheet-head .sheet-no{
+    font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--blue);
+    border:1px solid var(--blue); border-radius:2px; padding:.05rem .4rem;
+  }
+  .sheet-head h2{ font-size:clamp(1.5rem,4vw,2.1rem); }
+  .sheet-head .sub{ font-family:var(--font-mono); font-size:12px; color:var(--ink-faint); flex-basis:100%; }
+  .sheet > .lede{ font-size:16px; color:var(--ink-soft); max-width:62ch; margin-bottom:1.3rem; }
+
+  .card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+  .pad{ padding:1.1rem 1.2rem; }
+
+  /* ---- callouts (leader-note / revision-cloud styling) ---- */
+  .note{
+    display:flex; gap:.65rem; padding:.85rem 1rem; border-radius:var(--radius);
+    border:1px solid var(--line); background:var(--surface); margin:1rem 0; max-width:66ch;
+  }
+  .note svg{ width:18px; height:18px; flex:none; margin-top:.15rem; }
+  .note .t{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:600; margin-bottom:.2rem; }
+  .note p{ font-size:13.5px; color:var(--ink-soft); line-height:1.55; }
+  .note p code{ font-size:12.5px; }
+  .note.tip{ border-color:var(--blue); background:var(--blue-soft); }
+  .note.tip svg{ stroke:var(--blue); } .note.tip .t{ color:var(--blue-ink); }
+  .note.warn{ border-color:var(--red); background:var(--red-soft); border-style:dashed; }
+  .note.warn svg{ stroke:var(--red); } .note.warn .t{ color:var(--red-ink); }
+  .note.ok{ border-color:var(--green); background:var(--green-soft); }
+  .note.ok svg{ stroke:var(--green); } .note.ok .t{ color:var(--green-ink); }
+
+  code.k{
+    font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--blue-ink);
+    background:var(--blue-soft); border:1px solid var(--line); border-radius:3px; padding:.08rem .38rem;
+    white-space:nowrap;
+  }
+
+  /* ============================= STEP TIMELINE (workflow) ============================= */
+  .steps{ display:flex; flex-direction:column; }
+  .step{ display:grid; grid-template-columns:34px 1fr; gap:0 1rem; }
+  .step-rail{ display:flex; flex-direction:column; align-items:center; }
+  .step-dot{
+    width:34px; height:34px; border-radius:50%; border:2px solid var(--ink);
+    display:grid; place-items:center; background:var(--surface); flex:none;
+    font-family:var(--font-mono); font-weight:700; font-size:13px;
+  }
+  .step-line{ width:2px; flex:1; background:var(--line-strong); min-height:14px; }
+  .step:last-child .step-line{ display:none; }
+  .step-body{ padding-bottom:1.5rem; }
+  .step-body h3{ font-size:1.02rem; text-transform:none; letter-spacing:0; font-weight:700; margin-bottom:.25rem; }
+  .step-body p{ font-size:13.7px; color:var(--ink-soft); max-width:56ch; }
+  .step-auto .step-dot{ border-style:dashed; color:var(--ink-faint); border-color:var(--line-strong); }
+  .step-auto .step-body h3{ color:var(--ink-soft); }
+  .tag-auto{
+    font-family:var(--font-mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-faint); border:1px solid var(--line-strong); border-radius:2px; padding:.05rem .35rem;
+    margin-left:.4rem; vertical-align:middle;
+  }
+
+  /* ============================= POP-UP MOCKUP ============================= */
+  .demo-shell{ display:grid; grid-template-columns:minmax(0,340px) 1fr; gap:1.4rem; align-items:start; }
+  @media (max-width:760px){ .demo-shell{ grid-template-columns:1fr; } }
+
+  .dlg{
+    border:1px solid var(--line-strong); border-radius:4px; background:var(--surface);
+    box-shadow:var(--shadow); overflow:hidden; max-width:360px;
+  }
+  .dlg-title{
+    background:var(--surface-2); border-bottom:1px solid var(--line); padding:.5rem .8rem;
+    font-family:var(--font-mono); font-size:11.5px; font-weight:600; letter-spacing:.04em;
+    display:flex; align-items:center; gap:.4rem; color:var(--ink-soft);
+  }
+  .dlg-title svg{ width:13px; height:13px; }
+  .dlg-body{ padding:.85rem .9rem; }
+  .dlg-drawing{ font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); margin-bottom:.7rem; line-height:1.5; }
+  .dlg-drawing b{ color:var(--ink-soft); font-weight:600; }
+  fieldset.dlg-group{ border:1px solid var(--line); border-radius:3px; padding:.7rem .7rem .55rem; margin:0 0 .65rem; }
+  fieldset.dlg-group legend{ font-family:var(--font-mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); padding:0 .3rem; }
+  .fld{ margin-bottom:.55rem; }
+  .fld:last-child{ margin-bottom:0; }
+  .fld label{ display:block; font-size:11px; font-weight:600; color:var(--ink-soft); margin-bottom:.2rem; }
+  .fld input, .fld select{
+    width:100%; font-family:var(--font-mono); font-size:12.5px; color:var(--ink);
+    background:var(--paper); border:1px solid var(--line-strong); border-radius:2px; padding:.35rem .45rem;
+  }
+  .fld input:focus, .fld select:focus{ border-color:var(--blue); }
+  .fld input.invalid{ border-color:var(--red); background:var(--red-soft); }
+  .fld .hint{ font-size:10.5px; color:var(--ink-faint); margin-top:.2rem; min-height:1.2em; }
+  .fld .hint.bad{ color:var(--red-ink); }
+  .fld .hint.good{ color:var(--green-ink); }
+  .notes-panel{
+    border:1px solid var(--line-strong); border-radius:2px; background:var(--paper);
+    max-height:78px; overflow-y:auto; padding:.35rem .45rem; font-family:var(--font-mono); font-size:11.5px;
+    margin-bottom:.4rem; color:var(--ink-soft);
+  }
+  .notes-panel .empty{ color:var(--ink-faint); font-style:italic; }
+  .notes-panel .ln{ cursor:pointer; padding:.1rem 0; border-bottom:1px dotted var(--line); }
+  .notes-panel .ln:last-child{ border-bottom:none; }
+  .notes-panel .ln:hover{ color:var(--blue-ink); }
+  .notes-row{ display:flex; gap:.35rem; }
+  .notes-row input{ flex:1; }
+  .btn-mini{
+    font-family:var(--font-mono); font-size:11px; font-weight:600; border:1px solid var(--line-strong);
+    background:var(--surface); color:var(--ink-soft); border-radius:2px; padding:.35rem .5rem; cursor:pointer;
+    white-space:nowrap;
+  }
+  .btn-mini:hover{ border-color:var(--blue); color:var(--blue-ink); }
+  .dlg-actions{ display:flex; justify-content:center; gap:.6rem; padding-top:.3rem; }
+  .btn{
+    font-family:var(--font-mono); font-weight:700; font-size:12px; letter-spacing:.03em;
+    border-radius:3px; padding:.45rem 1.1rem; cursor:pointer; border:1px solid var(--ink);
+  }
+  .btn-primary{ background:var(--ink); color:var(--paper); }
+  .btn-primary:hover{ opacity:.88; }
+  .btn-ghost{ background:var(--surface); color:var(--ink-soft); border-color:var(--line-strong); }
+  .btn-ghost:hover{ border-color:var(--ink); color:var(--ink); }
+
+  .demo-readout{ display:flex; flex-direction:column; gap:.8rem; }
+  .readout-result{
+    border-radius:var(--radius); border:1px solid var(--line); padding:.9rem 1rem; min-height:88px;
+    display:flex; flex-direction:column; justify-content:center; gap:.3rem; background:var(--surface);
+  }
+  .readout-result .rr-t{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); }
+  .readout-result .rr-v{ font-size:14.5px; line-height:1.55; }
+  .readout-result.state-ok{ border-color:var(--green); background:var(--green-soft); }
+  .readout-result.state-warn{ border-color:var(--amber); background:var(--amber-soft); }
+  .readout-result.state-idle{ color:var(--ink-faint); }
+  .field-map{ display:flex; flex-direction:column; gap:.5rem; }
+  .field-map .fm-row{ display:flex; gap:.6rem; font-size:12.8px; border-bottom:1px dotted var(--line); padding-bottom:.5rem; }
+  .field-map .fm-row:last-child{ border-bottom:none; }
+  .field-map .fm-k{ flex:none; width:120px; color:var(--ink-faint); font-family:var(--font-mono); font-size:11px; padding-top:.1rem; }
+  .field-map .fm-v{ color:var(--ink-soft); }
+
+  /* ============================= IDLE TIMELINE DEMO ============================= */
+  .idle-demo .pad{ display:flex; flex-direction:column; gap:1rem; }
+  .idle-controls{ display:flex; flex-wrap:wrap; gap:.5rem; }
+  .idle-track-wrap{ }
+  .idle-track{
+    position:relative; height:34px; border-radius:3px; overflow:hidden; background:var(--surface-2);
+    border:1px solid var(--line); display:flex;
+  }
+  .idle-seg{ height:100%; position:relative; }
+  .idle-seg.work{ background:var(--green); }
+  .idle-seg.credit{ background:var(--amber); background-image:repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 6px, transparent 6px 12px); }
+  .idle-seg.lost{ background:var(--line-strong); background-image:repeating-linear-gradient(135deg, rgba(0,0,0,.06) 0 6px, transparent 6px 12px); }
+  .idle-legend{ display:flex; gap:1.1rem; flex-wrap:wrap; font-size:11.5px; color:var(--ink-soft); }
+  .idle-legend span{ display:inline-flex; align-items:center; gap:.35rem; }
+  .idle-legend i{ width:11px; height:11px; border-radius:2px; display:inline-block; }
+  .idle-legend i.work{ background:var(--green); }
+  .idle-legend i.credit{ background:var(--amber); }
+  .idle-legend i.lost{ background:var(--line-strong); }
+  .idle-tallies{ display:flex; gap:1rem; flex-wrap:wrap; }
+  .tally{ flex:1 1 130px; border:1px solid var(--line); border-radius:var(--radius); padding:.7rem .85rem; background:var(--surface); }
+  .tally .tl-k{ font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); }
+  .tally .tl-v{ font-family:var(--font-mono); font-size:1.5rem; font-weight:600; font-variant-numeric:tabular-nums; }
+  .tally.billed .tl-v{ color:var(--green-ink); }
+  .tally.idle .tl-v{ color:var(--ink-faint); }
+  .idle-log{ font-family:var(--font-mono); font-size:11.5px; color:var(--ink-soft); max-height:96px; overflow-y:auto;
+    border-top:1px dashed var(--line-strong); padding-top:.5rem; display:flex; flex-direction:column; gap:.2rem; }
+  .idle-log .empty{ color:var(--ink-faint); font-style:italic; }
+
+  /* ============================= COMMAND SCHEDULE ============================= */
+  .cmd-toolbar{ display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:.9rem; align-items:center; }
+  .cmd-search{
+    flex:1 1 220px; font-family:var(--font-mono); font-size:13px; padding:.5rem .7rem;
+    border:1px solid var(--line-strong); border-radius:3px; background:var(--surface); color:var(--ink);
+  }
+  .cmd-search:focus{ border-color:var(--blue); }
+  .chip{
+    font-family:var(--font-mono); font-size:11px; font-weight:600; letter-spacing:.03em;
+    border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-soft);
+    padding:.4rem .7rem; border-radius:20px; cursor:pointer;
+  }
+  .chip[aria-pressed="true"]{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .cmd-table{ border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; background:var(--surface); }
+  .cmd-row{ border-bottom:1px solid var(--line); }
+  .cmd-row:last-child{ border-bottom:none; }
+  .cmd-row summary{
+    list-style:none; cursor:pointer; display:grid;
+    grid-template-columns:150px 90px 1fr 20px; gap:.8rem; align-items:center;
+    padding:.65rem 1rem; font-size:13px;
+  }
+  .cmd-row summary::-webkit-details-marker{ display:none; }
+  .cmd-row summary .cname{ font-family:var(--font-mono); font-weight:700; color:var(--blue-ink); font-size:13px; }
+  .cmd-row summary .ccat{
+    font-family:var(--font-mono); font-size:9.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); border:1px solid var(--line-strong); border-radius:2px; padding:.1rem .35rem;
+    justify-self:start;
+  }
+  .cmd-row summary .cshort{ color:var(--ink-soft); font-size:12.8px; }
+  .cmd-row summary .chev{ transition:transform .15s ease; color:var(--ink-faint); }
+  .cmd-row[open] summary .chev{ transform:rotate(90deg); }
+  .cmd-row .cdetail{ padding:0 1rem 1rem 1rem; }
+  .cmd-row .cdetail p{ font-size:13px; color:var(--ink-soft); max-width:64ch; margin-bottom:.4rem; }
+  .cmd-row .cdetail .ex{
+    font-family:var(--font-mono); font-size:11.8px; background:var(--surface-2); border:1px solid var(--line);
+    border-radius:3px; padding:.5rem .65rem; white-space:pre-wrap; color:var(--ink-soft); margin-top:.3rem;
+  }
+  @media (max-width:620px){
+    .cmd-row summary{ grid-template-columns:1fr 20px; row-gap:.3rem; }
+    .cmd-row summary .ccat{ grid-column:1; order:3; }
+  }
+  .cmd-empty{ padding:1.5rem 1rem; text-align:center; color:var(--ink-faint); font-size:13px; }
+
+  /* ============================= ACCORDION (situations / troubleshooting) ============================= */
+  .qa{ border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); margin-bottom:.6rem; overflow:hidden; }
+  .qa summary{
+    list-style:none; cursor:pointer; padding:.85rem 1rem; font-weight:600; font-size:14px;
+    display:flex; justify-content:space-between; align-items:center; gap:.8rem;
+  }
+  .qa summary::-webkit-details-marker{ display:none; }
+  .qa summary .chev{ flex:none; color:var(--ink-faint); transition:transform .15s ease; }
+  .qa[open] summary .chev{ transform:rotate(90deg); }
+  .qa .qa-body{ padding:0 1.1rem 1rem; border-top:1px solid var(--line); padding-top:.8rem; }
+  .qa .qa-body p{ font-size:13.6px; color:var(--ink-soft); max-width:66ch; margin-bottom:.6rem; }
+  .qa .qa-body p:last-child{ margin-bottom:0; }
+  .qa .qa-body ul{ margin:.4rem 0 .6rem 1.1rem; padding:0; }
+  .qa .qa-body li{ font-size:13.4px; color:var(--ink-soft); margin-bottom:.3rem; }
+
+  /* ============================= QUICK REFERENCE ============================= */
+  .qr-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+  .qr-cell{ background:var(--surface); padding:.9rem 1rem; }
+  .qr-cell h4{ font-size:11px; letter-spacing:.08em; color:var(--ink-faint); margin-bottom:.5rem; }
+  .qr-cell .big{ font-family:var(--font-mono); font-size:1.3rem; font-weight:600; color:var(--ink); }
+  .qr-cell p{ font-size:12.5px; color:var(--ink-soft); margin-top:.3rem; line-height:1.5; }
+  .qr-cmdlist{ display:flex; flex-direction:column; gap:.35rem; }
+  .qr-cmdlist .r{ display:flex; gap:.6rem; font-size:12.5px; }
+  .qr-cmdlist code{ flex:none; width:96px; }
+  .print-btn{
+    display:inline-flex; align-items:center; gap:.45rem; margin-top:1rem;
+    font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--ink-soft);
+    border:1px solid var(--line-strong); background:var(--surface); border-radius:3px; padding:.5rem .9rem; cursor:pointer;
+  }
+  .print-btn:hover{ color:var(--ink); border-color:var(--ink); }
+  .print-btn svg{ width:14px; height:14px; }
+
+  footer.colophon{
+    max-width:1180px; margin:0 auto; padding:1.4rem 1.2rem 3rem; border-top:1px dashed var(--line-strong);
+    font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;
+  }
+
+  /* ============================= RESPONSIVE ============================= */
+  @media (max-width:900px){
+    .railwrap{ display:none; }
+    .mobile-rail{
+      display:block; position:sticky; top:calc(env(safe-area-inset-top,0px) + 66px); z-index:30;
+      background:var(--surface); border-bottom:1px solid var(--line); overflow-x:auto;
+    }
+    .mobile-rail-inner{ display:flex; gap:0; padding:0 .4rem; min-width:max-content; }
+    .mobile-rail button{
+      all:unset; cursor:pointer; font-family:var(--font-mono); font-size:11.5px; font-weight:600;
+      color:var(--ink-soft); padding:.65rem .7rem; border-bottom:3px solid transparent; white-space:nowrap;
+    }
+    .mobile-rail button[aria-current="true"]{ color:var(--blue-ink); border-bottom-color:var(--blue); }
+    main{ padding:1.3rem 1rem 3rem; }
+    .titleblock-cells{ display:none; }
+  }
+  @media (max-width:480px){
+    .titleblock-text h1{ font-size:1.15rem; }
+    .titleblock-mark{ width:32px; height:32px; }
+    .titleblock-mark svg{ width:17px; height:17px; }
+  }
+
+  /* ============================= PRINT ============================= */
+  @media print{
+    .titleblock, .railwrap, .mobile-rail, .theme-toggle, .print-btn, footer.colophon,
+    .demo-shell, .idle-demo, .cmd-toolbar { display:none !important; }
+    .sheet:not(#quickref){ display:none !important; }
+    body{ background:#fff; color:#000; font-size:11pt; }
+    .qr-grid{ break-inside:avoid; }
+    a{ color:#000; text-decoration:none; }
+  }
+</style>
+
+<!-- ============================================================ TITLE BLOCK ============================================================ -->
+<header class="titleblock">
+  <div class="titleblock-main">
+    <div class="titleblock-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21 21 3M7 21l14-14M3 17l4 4"/><circle cx="12" cy="12" r="9.2" stroke-dasharray="1.6 2.4" opacity=".4"/></svg>
+    </div>
+    <div class="titleblock-text">
+      <div class="kicker">Standard Operating Procedure</div>
+      <h1>CAD Hours Handbook</h1>
+    </div>
+  </div>
+  <div class="titleblock-cells hscroll">
+    <div class="tb-cell"><span class="k">Job format</span><span class="v">P#####</span></div>
+    <div class="tb-cell"><span class="k">Idle limit</span><span class="v">5 minutes</span></div>
+    <div class="tb-cell"><span class="k">Rev</span><span class="v" id="tb-date">—</span></div>
+  </div>
+  <div class="theme-toggle" role="group" aria-label="Theme">
+    <button type="button" id="theme-light" aria-pressed="false" title="Light">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.6 4.6l1.7 1.7M17.7 17.7l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.6 19.4l1.7-1.7M17.7 6.3l1.7-1.7"/></svg>
+    </button>
+    <button type="button" id="theme-dark" aria-pressed="false" title="Dark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.4 6.4 0 0 0 10.2 10.2Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- mobile section switcher -->
+<nav class="mobile-rail" aria-label="Sections">
+  <div class="mobile-rail-inner" id="mobile-rail-inner"></div>
+</nav>
+
+<div class="shell">
+  <!-- ============================================================ NAV RAIL ============================================================ -->
+  <div class="railwrap">
+    <nav class="rail" id="rail" aria-label="Sections"></nav>
+    <div class="rail-foot">
+      <p>This covers day-to-day use. Rollout and settings live in the repo's <span class="mono">docs/</span> folder for whoever administers the tracker.</p>
+    </div>
+  </div>
+
+  <!-- ============================================================ MAIN ============================================================ -->
+  <main>
+
+    <!-- 01 — OVERVIEW ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="overview" data-title="Overview">
+      <div class="sheet-head"><span class="sheet-no">01</span><h2>Overview</h2></div>
+      <p class="lede">A small tool that runs inside AutoCAD and logs whose time goes to which job, automatically, while you draw. This page is the reference for using it — not for installing it.</p>
+
+      <div class="card pad" style="margin-bottom:1.1rem;">
+        <p style="font-size:14.5px; color:var(--ink-soft); max-width:68ch; margin-bottom:.6rem;">
+          Open a drawing, tell it the job once, and go. It watches for activity the same way AutoCAD does — commands, edits, saves — pauses itself when you step away, and banks the time when you close the drawing. Nothing to remember to start or stop under normal use.
+        </p>
+        <p style="font-size:14.5px; color:var(--ink-soft); max-width:68ch;">
+          Every session lands in a plain, searchable record — by job, by person, by day or week — that your CAD manager can pull up without asking anyone what they worked on.
+        </p>
+      </div>
+
+      <div class="qr-grid">
+        <div class="qr-cell"><h4>Job numbers</h4><div class="big">P + 5 digits</div><p>e.g. <span class="mono">P10432</span>. Typed once, remembered per drawing and per job after that.</p></div>
+        <div class="qr-cell"><h4>Idle rule</h4><div class="big">5&nbsp;min</div><p>Step away longer than that and the clock credits five minutes, then stops until you're back.</p></div>
+        <div class="qr-cell"><h4>Multiple drawings</h4><div class="big">Independent</div><p>Only the drawing you're actually working in accrues time — the rest sit paused.</p></div>
+        <div class="qr-cell"><h4>Never guesses</h4><div class="big">Asks first</div><p>A template or a new blank drawing is never silently billed to whatever job you had open before.</p></div>
+      </div>
+
+      <div class="note tip">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.2v.1"/></svg>
+        <div><div class="t">Worth knowing up front</div><p>You will occasionally see a one-line message on the command line telling you what it just did — which job it started tracking, or that a drawing is untracked until you set one. That line is the whole interface outside of the pop-up; it's worth actually reading it once in a while.</p></div>
+      </div>
+    </section>
+
+    <!-- 02 — DAILY WORKFLOW ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="workflow" data-title="Daily Workflow">
+      <div class="sheet-head"><span class="sheet-no">02</span><h2>Daily Workflow</h2></div>
+      <p class="lede">What actually happens, in order, from opening a drawing to closing it. Steps marked <span class="tag-auto">automatic</span> need nothing from you.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Open a drawing</h3>
+            <p>AutoCAD loads as normal. The tracker starts in the background — you won't notice unless it needs something from you.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>The pop-up appears (usually)</h3>
+            <p>Confirm the job number, pick the project manager, add a task or a note if you like, click OK. It's pre-filled whenever the drawing itself gives it something to go on — see Sheet 03.</p>
+          </div>
+        </div>
+        <div class="step step-auto">
+          <div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Work normally<span class="tag-auto">automatic</span></h3>
+            <p>Drawing, editing, saving — any of it counts as active time. There's no timer to watch and nothing to click to keep it running.</p>
+          </div>
+        </div>
+        <div class="step step-auto">
+          <div class="step-rail"><div class="step-dot">4</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Step away<span class="tag-auto">automatic</span></h3>
+            <p>Longer than five minutes of no activity pauses the clock. See Sheet 04 for exactly how much of that gap still gets billed.</p>
+          </div>
+        </div>
+        <div class="step step-auto">
+          <div class="step-rail"><div class="step-dot">5</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Come back<span class="tag-auto">automatic</span></h3>
+            <p>The next thing you do resumes tracking. Nothing to reset or restart.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">6</div></div>
+          <div class="step-body">
+            <h3>Close the drawing</h3>
+            <p>The session is banked to the record the moment it closes. If it's your only open drawing and the total was under about ten seconds, it isn't recorded at all — opening a file just to glance at it doesn't clutter anyone's timesheet.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="note warn">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4.2M12 17v.1"/></svg>
+        <div><div class="t">Needing to stop without closing</div><p>Heading into a long meeting, or switching to something the drawing's job shouldn't be charged for? Type <code class="k">CHSTOP</code> — it banks the time and stops the clock. <code class="k">CHSTART</code> picks it back up.</p></div>
+      </div>
+    </section>
+
+    <!-- 03 — THE POP-UP (interactive) ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="popup" data-title="The Pop-up">
+      <div class="sheet-head"><span class="sheet-no">03</span><h2>The Pop-up</h2><span class="sub">Try it — this is a faithful copy of the real dialog</span></div>
+      <p class="lede">Four fields, one decision to make. Fill this one in the same way you would in AutoCAD; it behaves the same way, right down to the validation.</p>
+
+      <div class="demo-shell">
+        <div class="dlg">
+          <div class="dlg-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M8 4v5"/></svg>CAD Hours Tracker</div>
+          <div class="dlg-body">
+            <div class="dlg-drawing">Drawing: <b>A-204 Reflected Ceiling.dwg</b><br>P:\0000-Drafting\P10432 Baker Residence\CAD</div>
+
+            <fieldset class="dlg-group">
+              <legend>Charge this time to</legend>
+              <div class="fld">
+                <label for="d-job">Job number</label>
+                <input id="d-job" class="mono" maxlength="10" value="P10432" autocomplete="off">
+                <div class="hint" id="d-job-hint"></div>
+              </div>
+              <div class="fld">
+                <label for="d-mgr">Project manager</label>
+                <select id="d-mgr">
+                  <option value="">(none)</option>
+                  <option value="Karen Webb" selected>Karen Webb</option>
+                  <option value="Tom Lindqvist">Tom Lindqvist</option>
+                  <option value="David Cruz">David Cruz</option>
+                </select>
+              </div>
+              <div class="fld">
+                <label for="d-task">Task / phase</label>
+                <input id="d-task" placeholder="e.g. RCP layout" autocomplete="off">
+              </div>
+            </fieldset>
+
+            <fieldset class="dlg-group">
+              <legend>Notes (optional)</legend>
+              <div class="notes-panel" id="d-notes-panel"><span class="empty">No notes yet</span></div>
+              <div class="notes-row">
+                <input id="d-note-add" placeholder="Type a line, press Enter…" autocomplete="off">
+                <button class="btn-mini" id="d-note-add-btn" type="button">Add</button>
+              </div>
+              <div class="fld" style="margin-top:.4rem;"><div class="hint">Click a line above to pull it back for editing. Long note? A “Notepad…” button in the real dialog opens a full text editor.</div></div>
+            </fieldset>
+
+            <div class="dlg-actions">
+              <button class="btn btn-primary" id="d-ok" type="button">OK</button>
+              <button class="btn btn-ghost" id="d-skip" type="button">Skip</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="demo-readout">
+          <div class="readout-result state-idle" id="d-result">
+            <div class="rr-t">Result</div>
+            <div class="rr-v">Click OK or Skip to see what gets recorded.</div>
+          </div>
+          <div class="card pad">
+            <div class="field-map">
+              <div class="fm-row"><span class="fm-k">Job number</span><span class="fm-v">Must match <code class="k">P#####</code> — five digits, no more, no fewer. Typed wrong, OK simply won't close until it's fixed.</span></div>
+              <div class="fm-row"><span class="fm-k">Recent jobs</span><span class="fm-v">Not shown here, but the real dialog keeps a dropdown of jobs you've used recently, so most days it's a click rather than typing.</span></div>
+              <div class="fm-row"><span class="fm-k">Project manager</span><span class="fm-v">Maintained by your CAD manager in a plain list. Leave it blank if you're not sure — it isn't required.</span></div>
+              <div class="fm-row"><span class="fm-k">Skip</span><span class="fm-v">Time is still tracked, filed as <code class="k">UNASSIGNED</code>. Nothing is lost — set the job later with <code class="k">CHJOB</code>.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 — HOW TIME IS TRACKED (interactive idle demo) ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="timing" data-title="How Time Is Tracked">
+      <div class="sheet-head"><span class="sheet-no">04</span><h2>How Time Is Tracked</h2></div>
+      <p class="lede">There's no visible stopwatch. Time is worked out from what you actually did — and the idle rule is the one piece of math worth understanding, so try it below.</p>
+
+      <div class="card idle-demo" style="margin-bottom:1.3rem;">
+        <div class="pad">
+          <div class="idle-controls">
+            <button class="btn-mini" data-add="work-10">+10 min at the board</button>
+            <button class="btn-mini" data-add="away-3">Step away 3 min</button>
+            <button class="btn-mini" data-add="away-25">Step away 25 min</button>
+            <button class="btn-mini" data-add="away-70">Step away 70 min (lunch)</button>
+            <button class="btn-mini" id="idle-reset" style="margin-left:auto; border-color:var(--red); color:var(--red-ink);">Reset</button>
+          </div>
+
+          <div class="idle-track-wrap">
+            <div class="idle-track" id="idle-track"></div>
+          </div>
+          <div class="idle-legend">
+            <span><i class="work"></i> billed — at the board</span>
+            <span><i class="credit"></i> billed — first 5 min of a break</span>
+            <span><i class="lost"></i> not billed — rest of a long break</span>
+          </div>
+
+          <div class="idle-tallies">
+            <div class="tally billed"><div class="tl-k">Billed</div><div class="tl-v" id="idle-billed">0:00</div></div>
+            <div class="tally idle"><div class="tl-k">Not billed</div><div class="tl-v" id="idle-lost">0:00</div></div>
+            <div class="tally"><div class="tl-k">Wall time open</div><div class="tl-v" id="idle-wall">0:00</div></div>
+          </div>
+
+          <div class="idle-log" id="idle-log"><span class="empty">Add some time above to see how each stretch gets billed.</span></div>
+        </div>
+      </div>
+
+      <p style="font-size:13.6px; color:var(--ink-soft); max-width:66ch; margin-bottom:1rem;">
+        The rule behind that demo: a gap of <b>five minutes or less</b> since your last action is billed in full — that covers looking something up, answering a phone call at your desk, thinking through a detail. A gap <b>longer</b> than five minutes bills the first five and writes off the rest, the moment you come back and do something.
+      </p>
+
+      <div class="note tip">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>
+        <div><div class="t">More than one drawing open</div><p>Each open drawing is tracked on its own. Switch tabs and the one you were in pauses; the one you switch to picks up. You can never accidentally double-bill the same stretch of time to two jobs at once.</p></div>
+      </div>
+    </section>
+
+    <!-- 05 — COMMANDS (searchable schedule) ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="commands" data-title="Commands">
+      <div class="sheet-head"><span class="sheet-no">05</span><h2>Command Schedule</h2></div>
+      <p class="lede">Every command typed at AutoCAD's command line, same as <span class="mono">LINE</span> or <span class="mono">ZOOM</span>. Search or filter by group; click a row for the full description.</p>
+
+      <div class="cmd-toolbar">
+        <input class="cmd-search" id="cmd-search" type="search" placeholder="Search commands…  e.g. “job”, “report”, “stop”" aria-label="Search commands">
+        <button class="chip" data-cat="all" aria-pressed="true" type="button">All</button>
+        <button class="chip" data-cat="session" aria-pressed="false" type="button">Session</button>
+        <button class="chip" data-cat="reports" aria-pressed="false" type="button">Reports</button>
+        <button class="chip" data-cat="admin" aria-pressed="false" type="button">Admin</button>
+      </div>
+
+      <div class="cmd-table" id="cmd-table"></div>
+      <p class="cmd-empty" id="cmd-empty" hidden>No commands match that search.</p>
+    </section>
+
+    <!-- 06 — COMMON SITUATIONS ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="situations" data-title="Common Situations">
+      <div class="sheet-head"><span class="sheet-no">06</span><h2>Common Situations</h2></div>
+      <p class="lede">The everyday cases that aren't quite "open, work, close."</p>
+      <div id="situations-list"></div>
+    </section>
+
+    <!-- 07 — TROUBLESHOOTING ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="trouble" data-title="Troubleshooting">
+      <div class="sheet-head"><span class="sheet-no">07</span><h2>Troubleshooting</h2></div>
+      <p class="lede">If something looks off, it's almost always explained by one line the tracker already printed to the command line — scroll up and look before assuming it's broken.</p>
+      <div id="trouble-list"></div>
+    </section>
+
+    <!-- 08 — QUICK REFERENCE ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="quickref" data-title="Quick Reference">
+      <div class="sheet-head"><span class="sheet-no">08</span><h2>Quick Reference</h2></div>
+      <p class="lede">The one page worth pinning up. Everything above, compressed.</p>
+
+      <div class="qr-grid" style="margin-bottom:1rem;">
+        <div class="qr-cell">
+          <h4>Job number format</h4>
+          <div class="big">P#####</div>
+          <p>Letter P, then exactly five digits. e.g. <span class="mono">P10432</span></p>
+        </div>
+        <div class="qr-cell">
+          <h4>Idle rule</h4>
+          <div class="big">5 min credited</div>
+          <p>Any gap over 5 minutes bills the first 5, discards the rest.</p>
+        </div>
+        <div class="qr-cell">
+          <h4>Skipped the pop-up?</h4>
+          <div class="big">Still tracked</div>
+          <p>Filed as <span class="mono">UNASSIGNED</span> — fix it anytime with CHJOB.</p>
+        </div>
+        <div class="qr-cell">
+          <h4>Template / new drawing</h4>
+          <div class="big">Not billed</div>
+          <p>Never silently charged to your last job. Save it into a job folder and it's picked up automatically.</p>
+        </div>
+      </div>
+
+      <div class="qr-grid">
+        <div class="qr-cell">
+          <h4>Session control</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">CHJOB</code><span>Set or change the job</span></div>
+            <div class="r"><code class="k">CHSTATUS</code><span>What's tracking right now</span></div>
+            <div class="r"><code class="k">CHSTOP</code><span>Bank time, stop the clock</span></div>
+            <div class="r"><code class="k">CHSTART</code><span>Resume after CHSTOP</span></div>
+          </div>
+        </div>
+        <div class="qr-cell">
+          <h4>Your hours</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">CHTODAY</code><span>Today, by job</span></div>
+            <div class="r"><code class="k">CHWEEK</code><span>This week, by day &amp; job</span></div>
+            <div class="r"><code class="k">CHJOBHOURS</code><span>Everything on one job</span></div>
+            <div class="r"><code class="k">CHDASH</code><span>Open the browser dashboard</span></div>
+          </div>
+        </div>
+        <div class="qr-cell">
+          <h4>If something's off</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">CHDLG</code><span>Test the pop-up on its own</span></div>
+            <div class="r"><code class="k">CHRECOVER</code><span>Re-file a crashed session</span></div>
+            <div class="r"><code class="k">CHCONFIG</code><span>Show the active settings</span></div>
+            <div class="r"><code class="k">CADHOURS</code><span>Full command list</span></div>
+          </div>
+        </div>
+      </div>
+
+      <button class="print-btn" id="print-btn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-2M6 14h12v8H6z"/></svg>
+        Print this page
+      </button>
+    </section>
+
+  </main>
+</div>
+
+<footer class="colophon">
+  <span>CAD Hours Tracker — internal SOP</span>
+  <span>Questions on rollout or settings go to your CAD manager</span>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- theme toggle (persists per-viewer only) ---------------- */
+  var root = document.documentElement;
+  function applyTheme(t){
+    if(t === 'light'){ root.setAttribute('data-theme','light'); }
+    else if(t === 'dark'){ root.setAttribute('data-theme','dark'); }
+    else { root.removeAttribute('data-theme'); }
+    document.getElementById('theme-light').setAttribute('aria-pressed', t==='light' ? 'true':'false');
+    document.getElementById('theme-dark').setAttribute('aria-pressed', t==='dark' ? 'true':'false');
+  }
+  var savedTheme = null;
+  try { savedTheme = localStorage.getItem('cadh-theme'); } catch(e){}
+  applyTheme(savedTheme);
+  document.getElementById('theme-light').addEventListener('click', function(){
+    applyTheme('light'); try{ localStorage.setItem('cadh-theme','light'); }catch(e){}
+  });
+  document.getElementById('theme-dark').addEventListener('click', function(){
+    applyTheme('dark'); try{ localStorage.setItem('cadh-theme','dark'); }catch(e){}
+  });
+
+  /* ---------------- revision date ---------------- */
+  try{
+    var d = new Date();
+    document.getElementById('tb-date').textContent =
+      d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'2-digit'});
+  }catch(e){}
+
+  /* ---------------- section nav (rail + mobile) ---------------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.sheet[data-title]'));
+  var rail = document.getElementById('rail');
+  var mrail = document.getElementById('mobile-rail-inner');
+
+  sections.forEach(function(sec, i){
+    var num = String(i+1).padStart(2,'0');
+    var b1 = document.createElement('button');
+    b1.type = 'button'; b1.setAttribute('data-target', sec.id);
+    b1.innerHTML = '<span class="num">'+num+'</span><span>'+sec.dataset.title+'</span>';
+    rail.appendChild(b1);
+
+    var b2 = document.createElement('button');
+    b2.type = 'button'; b2.setAttribute('data-target', sec.id);
+    b2.textContent = num + ' · ' + sec.dataset.title;
+    mrail.appendChild(b2);
+  });
+
+  function setCurrent(id){
+    document.querySelectorAll('.rail button, .mobile-rail button').forEach(function(b){
+      b.setAttribute('aria-current', b.getAttribute('data-target') === id ? 'true' : 'false');
+    });
+  }
+  document.querySelectorAll('.rail button, .mobile-rail button').forEach(function(b){
+    b.addEventListener('click', function(){
+      var t = document.getElementById(b.getAttribute('data-target'));
+      if(t){ t.scrollIntoView({behavior:'smooth', block:'start'}); }
+    });
+  });
+  if(sections[0]) setCurrent(sections[0].id);
+
+  if('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      var best = null, bestRatio = 0;
+      entries.forEach(function(en){
+        if(en.isIntersecting && en.intersectionRatio > bestRatio){ bestRatio = en.intersectionRatio; best = en.target; }
+      });
+      if(best) setCurrent(best.id);
+    }, { rootMargin: '-96px 0px -55% 0px', threshold: [0.1,0.25,0.5,0.75] });
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  /* ================================================================
+     03 — POP-UP MOCKUP
+  ================================================================ */
+  var jobInput = document.getElementById('d-job');
+  var jobHint  = document.getElementById('d-job-hint');
+  var mgrSel   = document.getElementById('d-mgr');
+  var taskIn   = document.getElementById('d-task');
+  var notesPanel = document.getElementById('d-notes-panel');
+  var noteAdd  = document.getElementById('d-note-add');
+  var noteAddBtn = document.getElementById('d-note-add-btn');
+  var resultBox = document.getElementById('d-result');
+  var noteLines = [];
+
+  function validateJob(){
+    var v = jobInput.value.trim().toUpperCase();
+    var ok = /^P\d{5}$/.test(v);
+    jobInput.classList.toggle('invalid', v.length>0 && !ok);
+    if(v === ''){ jobHint.textContent = ''; jobHint.className='hint'; }
+    else if(ok){ jobHint.textContent = 'Valid job number.'; jobHint.className='hint good'; }
+    else { jobHint.textContent = 'Needs to be P followed by exactly five digits.'; jobHint.className='hint bad'; }
+    return ok;
+  }
+  jobInput.addEventListener('input', validateJob);
+  validateJob();
+
+  function renderNotes(){
+    notesPanel.innerHTML = '';
+    if(noteLines.length === 0){
+      notesPanel.innerHTML = '<span class="empty">No notes yet</span>';
+      return;
+    }
+    noteLines.forEach(function(ln, i){
+      var d = document.createElement('div');
+      d.className = 'ln'; d.textContent = ln; d.tabIndex = 0;
+      d.addEventListener('click', function(){
+        noteAdd.value = ln;
+        noteLines.splice(i,1);
+        renderNotes();
+        noteAdd.focus();
+      });
+      notesPanel.appendChild(d);
+    });
+    notesPanel.scrollTop = notesPanel.scrollHeight;
+  }
+  function addNote(){
+    var v = noteAdd.value.trim();
+    if(v){ noteLines.push(v); noteAdd.value=''; renderNotes(); }
+  }
+  noteAddBtn.addEventListener('click', addNote);
+  noteAdd.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); addNote(); } });
+
+  function showResult(kind, html){
+    resultBox.className = 'readout-result ' + kind;
+    resultBox.innerHTML = '<div class="rr-t">Result</div><div class="rr-v">' + html + '</div>';
+  }
+
+  document.getElementById('d-ok').addEventListener('click', function(){
+    addNote();
+    if(!validateJob()){
+      showResult('state-warn', 'OK is blocked until the job number is valid — try <code class="k">P10432</code>.');
+      jobInput.focus();
+      return;
+    }
+    var job = jobInput.value.trim().toUpperCase();
+    var mgr = mgrSel.value;
+    var task = taskIn.value.trim();
+    var bits = ['Tracking started on job <b>'+job+'</b>'];
+    if(mgr) bits.push('for <b>'+mgr+'</b>');
+    if(task) bits.push('&mdash; '+task);
+    var extra = noteLines.length ? ' <span style="color:var(--ink-faint)">('+noteLines.length+' note line'+(noteLines.length>1?'s':'')+' attached)</span>' : '';
+    showResult('state-ok', bits.join(' ') + '.' + extra);
+  });
+
+  document.getElementById('d-skip').addEventListener('click', function(){
+    showResult('state-warn', 'Time is still recorded &mdash; filed as <code class="k">UNASSIGNED</code>. Type <code class="k">CHJOB</code> whenever you’re ready to set it.');
+  });
+
+  /* ================================================================
+     04 — IDLE TIMELINE DEMO
+  ================================================================ */
+  var IDLE_LIMIT = 300, IDLE_CREDIT = 300; // seconds
+  var billed = 0, lost = 0, wall = 0;
+  var track = document.getElementById('idle-track');
+  var log = document.getElementById('idle-log');
+
+  function fmt(sec){
+    sec = Math.round(sec);
+    var m = Math.floor(sec/60), s = sec%60;
+    return m + ':' + String(s).padStart(2,'0');
+  }
+  function renderTallies(){
+    document.getElementById('idle-billed').textContent = fmt(billed);
+    document.getElementById('idle-lost').textContent = fmt(lost);
+    document.getElementById('idle-wall').textContent = fmt(wall);
+  }
+  function addSeg(cls, seconds){
+    if(wall === 0){ track.innerHTML = ''; }
+    var total = wall + seconds;
+    // rebuild proportionally is overkill for a demo strip; just append flex-basis segments
+    var seg = document.createElement('div');
+    seg.className = 'idle-seg ' + cls;
+    seg.style.flex = seconds + ' 0 auto';
+    track.appendChild(seg);
+  }
+  function logLine(text){
+    if(log.querySelector('.empty')) log.innerHTML = '';
+    var p = document.createElement('div');
+    p.textContent = text;
+    log.appendChild(p);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function work(minutes){
+    var secs = minutes*60;
+    billed += secs; wall += secs;
+    addSeg('work', secs);
+    logLine('+ ' + minutes + ' min at the board — billed in full.');
+    renderTallies();
+  }
+  function away(minutes){
+    var secs = minutes*60; wall += secs;
+    if(secs <= IDLE_LIMIT){
+      billed += secs;
+      addSeg('work', secs);
+      logLine('Away ' + minutes + ' min — under the 5-min limit, billed in full.');
+    } else {
+      billed += IDLE_CREDIT;
+      lost += (secs - IDLE_CREDIT);
+      addSeg('credit', IDLE_CREDIT);
+      addSeg('lost', secs - IDLE_CREDIT);
+      logLine('Away ' + minutes + ' min — first 5:00 billed, remaining ' + fmt(secs-IDLE_CREDIT) + ' not billed.');
+    }
+    renderTallies();
+  }
+  document.querySelectorAll('[data-add]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var k = btn.getAttribute('data-add');
+      if(k === 'work-10') work(10);
+      else if(k === 'away-3') away(3);
+      else if(k === 'away-25') away(25);
+      else if(k === 'away-70') away(70);
+    });
+  });
+  document.getElementById('idle-reset').addEventListener('click', function(){
+    billed=0; lost=0; wall=0; track.innerHTML=''; renderTallies();
+    log.innerHTML = '<span class="empty">Add some time above to see how each stretch gets billed.</span>';
+  });
+  renderTallies();
+
+  /* ================================================================
+     05 — COMMAND SCHEDULE
+  ================================================================ */
+  var COMMANDS = [
+    {name:'CHJOB', cat:'session', catLabel:'Session', short:'Set or change the job number for this drawing.',
+      detail:'Opens the same pop-up as on drawing open. Use it any time — to fill in a job you skipped, to correct one, or to switch jobs mid-drawing. Switching jobs splits the session: time already worked stays on the old job, and a new one starts on the job you just set.'},
+    {name:'CHSTATUS', cat:'session', catLabel:'Session', short:'What is being tracked right now, and how much time is banked.',
+      detail:'Shows the job, manager, task, whether the clock is running or paused, and the time billed so far in this drawing. The first thing to check if anything looks off.'},
+    {name:'CHSTART', cat:'session', catLabel:'Session', short:'Start tracking, if it isn’t already running.',
+      detail:'Only needed after CHSTOP, or if tracking somehow never started for this drawing.'},
+    {name:'CHSTOP', cat:'session', catLabel:'Session', short:'Bank the time so far and stop the clock, without closing the drawing.',
+      detail:'Use this before stepping away for something the drawing shouldn’t be charged for — a long meeting, switching to unrelated work — without wanting to close the file. CHSTART picks tracking back up.'},
+    {name:'CHTODAY', cat:'reports', catLabel:'Reports', short:'Your hours today, broken down by job.',
+      detail:'A quick command-line summary of what you’ve logged so far today, split by job number.'},
+    {name:'CHWEEK', cat:'reports', catLabel:'Reports', short:'Your hours this week, by day and by job.',
+      detail:'Same idea as CHTODAY, over the current week, so you can sanity-check before a Friday timesheet.'},
+    {name:'CHJOBHOURS', cat:'reports', catLabel:'Reports', short:'Everything logged against one job number.',
+      detail:'Prompts for a job number, then totals every hour anyone has logged to it — useful for checking a job’s running total before a client call.'},
+    {name:'CHFIND', cat:'reports', catLabel:'Reports', short:'Search sessions by user, job, or date range.',
+      detail:'The general-purpose search — narrower or broader than CHTODAY/CHWEEK/CHJOBHOURS when you need a specific slice.'},
+    {name:'CHREPORT', cat:'reports', catLabel:'Reports', short:'A guided report with the grouping of your choice.',
+      detail:'Walks through a few prompts (period, filter, grouping) and prints a formatted summary — the one to reach for before asking your CAD manager to pull something custom.'},
+    {name:'CHEXPORT', cat:'reports', catLabel:'Reports', short:'Write matching sessions out to a CSV file.',
+      detail:'For anything that needs to land in a spreadsheet — payroll backup, a client billing breakdown, an audit.'},
+    {name:'CHDASH', cat:'reports', catLabel:'Reports', short:'Build and open the searchable HTML dashboard, for a chosen filter.',
+      detail:'Prompts for a period, user and job, then opens a browser page with search, filters and pivot tables — shareable with anyone, no AutoCAD required to view it.'},
+    {name:'CHDASHALL', cat:'reports', catLabel:'Reports', short:'Refresh that dashboard with everything, no prompts.',
+      detail:'The one to run as an end-of-day habit — every session, every user, no chance of it being scoped to the wrong period by accident.'},
+    {name:'CHRECOVER', cat:'admin', catLabel:'Admin', short:'Re-file a session left behind by a crash.',
+      detail:'If AutoCAD closes unexpectedly, the session it was tracking is picked up automatically the next time a drawing opens — this runs that recovery on demand instead of waiting.'},
+    {name:'CHCONFIG', cat:'admin', catLabel:'Admin', short:'Show the settings currently in force.',
+      detail:'Useful when something behaves differently than expected — confirms the job pattern, idle timing, and where the data is being written, straight from the live configuration.'},
+    {name:'CHDLG', cat:'admin', catLabel:'Admin', short:'Test the job pop-up on its own — nothing is recorded.',
+      detail:'Opens the real dialog in isolation and reports exactly what it returned. The first thing to run if the pop-up seems to be misbehaving, before reporting it further.'},
+    {name:'CADHOURS', cat:'admin', catLabel:'Admin', short:'Print the full command list.',
+      detail:'A one-line summary of every command above, straight from AutoCAD’s command line — the built-in cheat sheet.'}
+  ];
+
+  var cmdTable = document.getElementById('cmd-table');
+  var cmdEmpty = document.getElementById('cmd-empty');
+  var cmdSearch = document.getElementById('cmd-search');
+  var activeCat = 'all';
+
+  function buildCmdRow(c){
+    var det = document.createElement('details');
+    det.className = 'cmd-row';
+    det.dataset.name = c.name.toLowerCase();
+    det.dataset.short = c.short.toLowerCase();
+    det.dataset.cat = c.cat;
+    var s = document.createElement('summary');
+    s.innerHTML =
+      '<span class="cname">'+c.name+'</span>' +
+      '<span class="ccat">'+c.catLabel+'</span>' +
+      '<span class="cshort">'+c.short+'</span>' +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+    det.appendChild(s);
+    var body = document.createElement('div');
+    body.className = 'cdetail';
+    body.innerHTML = '<p>'+c.detail+'</p>';
+    det.appendChild(body);
+    return det;
+  }
+  COMMANDS.forEach(function(c){ cmdTable.appendChild(buildCmdRow(c)); });
+
+  function filterCmds(){
+    var q = cmdSearch.value.trim().toLowerCase();
+    var any = false;
+    cmdTable.querySelectorAll('.cmd-row').forEach(function(row){
+      var catOk = (activeCat === 'all' || row.dataset.cat === activeCat);
+      var textOk = (!q || row.dataset.name.indexOf(q) > -1 || row.dataset.short.indexOf(q) > -1);
+      var show = catOk && textOk;
+      row.hidden = !show;
+      if(show) any = true;
+    });
+    cmdEmpty.hidden = any;
+  }
+  cmdSearch.addEventListener('input', filterCmds);
+  document.querySelectorAll('.chip').forEach(function(chip){
+    chip.addEventListener('click', function(){
+      document.querySelectorAll('.chip').forEach(function(c){ c.setAttribute('aria-pressed','false'); });
+      chip.setAttribute('aria-pressed','true');
+      activeCat = chip.getAttribute('data-cat');
+      filterCmds();
+    });
+  });
+  filterCmds();
+
+  /* ================================================================
+     06 — COMMON SITUATIONS
+  ================================================================ */
+  var SITUATIONS = [
+    {q:'I opened a template or a brand-new blank drawing',
+     a:'<p>It won’t be billed to whatever job you had open before — a wrong job number in the record is worse than a missing one, so the tracker never guesses here. The drawing is tracked as <code class="k">UNASSIGNED</code> until you either type <code class="k">CHJOB</code>, or save it into a real job folder — doing that is picked up automatically, and a message confirms which job it landed on.</p>'},
+    {q:'I need to switch jobs partway through a drawing',
+     a:'<p>Type <code class="k">CHJOB</code> and enter the new one. The session splits automatically: time already worked stays booked to the first job, and a fresh session starts on the new one the moment you confirm it. Nothing needs to be done by hand.</p>'},
+    {q:'I skipped the pop-up and forgot about it',
+     a:'<p>Nothing is lost — the drawing keeps tracking as <code class="k">UNASSIGNED</code>, and you’ll get an occasional command-line reminder. Run <code class="k">CHJOB</code> whenever it’s convenient; it re-files the time already logged onto the job you enter.</p>'},
+    {q:'I have two (or more) drawings open at once',
+     a:'<p>Each is tracked completely independently. Only the drawing you’re actually clicked into accrues time — switch tabs and that one picks up while the other pauses. Check any of them individually with <code class="k">CHSTATUS</code>.</p>'},
+    {q:'I stepped away for a meeting or a site visit',
+     a:'<p>Nothing to do beforehand. After five minutes of no activity the clock pauses on its own, crediting the first five minutes and writing off the rest — see the demo on Sheet 04. Coming back and doing anything at all resumes it.</p>'},
+    {q:'I want to double-check my hours before submitting a timesheet',
+     a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> for a quick command-line total. For something to actually look at and filter, <code class="k">CHDASH</code> opens a full searchable page in your browser.</p>'},
+    {q:'A drawing got saved into the wrong job folder',
+     a:'<p>Fix the job on the drawing itself with <code class="k">CHJOB</code> — the tracker only adopts a folder’s job automatically the moment a save happens, so correcting it there is enough going forward. If time already logged needs correcting too, flag it to your CAD manager; the records are plain CSV files and can be edited directly if needed.</p>'}
+  ];
+  var sitList = document.getElementById('situations-list');
+  SITUATIONS.forEach(function(s){
+    var d = document.createElement('details'); d.className = 'qa';
+    d.innerHTML = '<summary>' + s.q +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>' +
+      '<div class="qa-body">' + s.a + '</div>';
+    sitList.appendChild(d);
+  });
+
+  /* ================================================================
+     07 — TROUBLESHOOTING
+  ================================================================ */
+  var TROUBLE = [
+    {q:'No pop-up appeared when I opened a drawing',
+     a:'<p>Two explanations cover almost every case. Run <code class="k">CHSTATUS</code> first — if it shows a job already set, look a line or two above it in the command-line history: the tracker announced what it found and why it didn’t need to ask (usually the job number was recognisable from the folder path). If instead it shows <code class="k">UNASSIGNED</code> and nothing was said, it was likely a template or an unsaved drawing — see Sheet 06.</p><p>If neither explains it, run <code class="k">CHDLG</code> to test the dialog on its own.</p>'},
+    {q:'The wrong job number is showing',
+     a:'<p>Type <code class="k">CHJOB</code> and correct it — the tracker will never have silently guessed a job on its own without saying so; something in the drawing’s history or folder path pointed at the one it picked. Fixing it here is enough; it doesn’t affect any other drawing.</p>'},
+    {q:'I can’t find hours I know were logged',
+     a:'<p>Run <code class="k">CHDASHALL</code> rather than <code class="k">CHDASH</code> — the plain <code class="k">CHDASH</code> prompts for a period and it’s easy to end up scoped to just the current month. <code class="k">CHDASHALL</code> takes no prompts and always covers everything.</p>'},
+    {q:'The pop-up appeared but won’t respond to clicks or typing',
+     a:'<p>Close AutoCAD and reopen it, then run <code class="k">CHDLG</code> — it opens the same dialog in isolation and reports exactly what happened. Pass whatever it shows to your CAD manager; this is a configuration issue on that machine, not something to work around drawing by drawing.</p>'},
+    {q:'Opening or closing a drawing feels slow',
+     a:'<p>Run <code class="k">CHCONFIG</code> and check the line showing where the tracker loaded its code from — it should say a local folder, not the shared drive. If it’s reading from the share every time, flag it; that’s a one-line fix on the server side, not something to live with.</p>'},
+    {q:'AutoCAD crashed while I was working',
+     a:'<p>Nothing to do — the next drawing you open re-files whatever was left in progress automatically, using its last known state. Run <code class="k">CHRECOVER</code> only if you want that to happen immediately rather than waiting.</p>'}
+  ];
+  var trbList = document.getElementById('trouble-list');
+  TROUBLE.forEach(function(s){
+    var d = document.createElement('details'); d.className = 'qa';
+    d.innerHTML = '<summary>' + s.q +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>' +
+      '<div class="qa-body">' + s.a + '</div>';
+    trbList.appendChild(d);
+  });
+
+  /* ---------------- print ---------------- */
+  document.getElementById('print-btn').addEventListener('click', function(){ window.print(); });
+
+})();
+</script>

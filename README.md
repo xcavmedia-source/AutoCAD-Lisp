@@ -7,6 +7,12 @@ work, pauses after five minutes of silence, resumes when you start again, and
 banks the time when you close the file. Everything lands in a searchable CSV
 database on a file share, with reports by job, user, day, week and total.
 
+**Using this day to day, rather than deploying or maintaining it?** Start with
+the **[CAD Hours Handbook](docs/handbook.html)** — an interactive SOP with a
+working mockup of the pop-up, a live demo of the idle-timing rule, a
+searchable command reference, and troubleshooting. Open the file in a browser,
+or ask whoever set this up for the hosted link.
+
 ---
 
 ## The two questions, answered
@@ -165,7 +171,8 @@ install\  Deploy-CADHours.bat      one-command install / uninstall
           managers.txt             the project manager drop-down list
           CADHours.bundle\         AutoCAD AutoLoader manifest
           acaddoc.lsp              paste-in block for a manual network rollout
-docs\     language-choice.md       why AutoLISP, and when to switch to .NET
+docs\     handbook.html            interactive SOP for day-to-day users
+          language-choice.md       why AutoLISP, and when to switch to .NET
           manual-install.md        multi-PC rollout via each PC's acaddoc.lsp
           deployment.md            rollout, security prompts, enforcement
           data-model.md            schema, recovery, SQL and Excel
