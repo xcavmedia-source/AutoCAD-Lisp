@@ -13,7 +13,7 @@
 
 (vl-load-com)
 
-(setq *ch-version* "1.3.3")
+(setq *ch-version* "1.4.0")
 
 
 ;;; ---- module registry ---------------------------------------------------
@@ -703,6 +703,7 @@
     (cons "UseDialog"          "1")
     (cons "ManagerFile"        "")
     (cons "RequireManager"     "0")
+    (cons "AdminUsers"         "")
     (cons "NoteLines"          "4")
     (cons "DefaultJob"         "")
     (cons "RememberJobInDwg"   "0")
@@ -979,6 +980,38 @@
 )
 
 
+;;; ---- who may run the shared-dashboard commands ------------------------
+;;;
+;;; AdminUsers is a comma- or semicolon-separated list of Windows user
+;;; names, read from cadhours.ini - which lives in the read-only program
+;;; folder, so this is enforced the same way the tracker itself is: a
+;;; user cannot edit their way onto the list any more than they can edit
+;;; the tracker.
+;;;
+;;; Left blank (the default) nothing is restricted, so a small office
+;;; that trusts everyone equally sees no change at all.
+
+(defun ch:admin-list ( / raw parts p out)
+  (setq raw (ch:cfg "AdminUsers"))
+  (if (/= (ch:trim raw) "")
+    (progn
+      (setq raw (ch:replace raw ";" ","))
+      (foreach p (ch:split raw ",")
+        (setq p (strcase (ch:trim p)))
+        (if (/= p "") (setq out (cons p out)))
+      )
+    )
+  )
+  (reverse out)
+)
+
+;;; T when AdminUsers is blank (nobody restricted) or this user is on it
+(defun ch:is-admin ( / list)
+  (setq list (ch:admin-list))
+  (if (null list) T (member (ch:user) list))
+)
+
+
 ;;; ---- project managers -------------------------------------------------
 ;;;
 ;;; A plain list, one name per line, that the CAD manager owns.  It is
@@ -1102,7 +1135,7 @@
 )
 
 
-(ch:module "Core" "1.3.3")
+(ch:module "Core" "1.4.0")
 
 (princ)
 ;;; ============================================================ EOF

@@ -489,7 +489,7 @@
   <div class="railwrap">
     <nav class="rail" id="rail" aria-label="Sections"></nav>
     <div class="rail-foot">
-      <p>This covers day-to-day use. Rollout and settings live in the repo's <span class="mono">docs/</span> folder for whoever administers the tracker.</p>
+      <p>This covers day-to-day use — your own hours, on your own drawings. Rollout, settings and the shared multi-user dashboard are covered separately for whoever administers the tracker.</p>
     </div>
   </div>
 
@@ -802,7 +802,7 @@
         <div class="qr-cell">
           <h4>Session control</h4>
           <div class="qr-cmdlist">
-            <div class="r"><code class="k">CHJOB</code><span>Set or change the job</span></div>
+            <div class="r"><code class="k">CHJOB</code><span>Set or correct the job</span></div>
             <div class="r"><code class="k">CHSTATUS</code><span>What's tracking right now</span></div>
             <div class="r"><code class="k">CHSTOP</code><span>Bank time, stop the clock</span></div>
             <div class="r"><code class="k">CHSTART</code><span>Resume after CHSTOP</span></div>
@@ -814,7 +814,7 @@
             <div class="r"><code class="k">CHTODAY</code><span>Today, by job</span></div>
             <div class="r"><code class="k">CHWEEK</code><span>This week, by day &amp; job</span></div>
             <div class="r"><code class="k">CHJOBHOURS</code><span>Everything on one job</span></div>
-            <div class="r"><code class="k">CHDASH</code><span>Open the browser dashboard</span></div>
+            <div class="r"><code class="k">CHFIND</code><span>Search by period, user, job</span></div>
           </div>
         </div>
         <div class="qr-cell">
@@ -1071,8 +1071,8 @@
      05 — COMMAND SCHEDULE
   ================================================================ */
   var COMMANDS = [
-    {name:'CHJOB', cat:'session', catLabel:'Session', short:'Set or change the job number for this drawing.',
-      detail:'Opens the same pop-up as on drawing open. Use it any time — to fill in a job you skipped, to correct one, or to switch jobs mid-drawing. Switching jobs splits the session: time already worked stays on the old job, and a new one starts on the job you just set.'},
+    {name:'CHJOB', cat:'session', catLabel:'Session', short:'Set the job for this drawing, or correct it if it’s wrong.',
+      detail:'Opens the same pop-up as on drawing open. Use it to fill in a job that was skipped, or to fix one that got typed or picked wrong. It is not a way to move a file’s time onto a different job while the file itself stays put — a drawing’s job comes from where it lives, so if the work genuinely belongs elsewhere, save or move the drawing into that job’s folder instead and the tracker picks it up on its own (Sheet 06). Correcting a job after time has already been logged does not move that earlier time — it stays where it was.'},
     {name:'CHSTATUS', cat:'session', catLabel:'Session', short:'What is being tracked right now, and how much time is banked.',
       detail:'Shows the job, manager, task, whether the clock is running or paused, and the time billed so far in this drawing. The first thing to check if anything looks off.'},
     {name:'CHSTART', cat:'session', catLabel:'Session', short:'Start tracking, if it isn’t already running.',
@@ -1091,10 +1091,6 @@
       detail:'Walks through a few prompts (period, filter, grouping) and prints a formatted summary — the one to reach for before asking your CAD manager to pull something custom.'},
     {name:'CHEXPORT', cat:'reports', catLabel:'Reports', short:'Write matching sessions out to a CSV file.',
       detail:'For anything that needs to land in a spreadsheet — payroll backup, a client billing breakdown, an audit.'},
-    {name:'CHDASH', cat:'reports', catLabel:'Reports', short:'Build and open the searchable HTML dashboard, for a chosen filter.',
-      detail:'Prompts for a period, user and job, then opens a browser page with search, filters and pivot tables — shareable with anyone, no AutoCAD required to view it.'},
-    {name:'CHDASHALL', cat:'reports', catLabel:'Reports', short:'Refresh that dashboard with everything, no prompts.',
-      detail:'The one to run as an end-of-day habit — every session, every user, no chance of it being scoped to the wrong period by accident.'},
     {name:'CHRECOVER', cat:'admin', catLabel:'Admin', short:'Re-file a session left behind by a crash.',
       detail:'If AutoCAD closes unexpectedly, the session it was tracking is picked up automatically the next time a drawing opens — this runs that recovery on demand instead of waiting.'},
     {name:'CHCONFIG', cat:'admin', catLabel:'Admin', short:'Show the settings currently in force.',
@@ -1160,8 +1156,8 @@
   var SITUATIONS = [
     {q:'I opened a template or a brand-new blank drawing',
      a:'<p>It won’t be billed to whatever job you had open before — a wrong job number in the record is worse than a missing one, so the tracker never guesses here. The drawing is tracked as <code class="k">UNASSIGNED</code> until you either type <code class="k">CHJOB</code>, or save it into a real job folder — doing that is picked up automatically, and a message confirms which job it landed on.</p>'},
-    {q:'I need to switch jobs partway through a drawing',
-     a:'<p>Type <code class="k">CHJOB</code> and enter the new one. The session splits automatically: time already worked stays booked to the first job, and a fresh session starts on the new one the moment you confirm it. Nothing needs to be done by hand.</p>'},
+    {q:'The job is wrong, or the work has moved to a different job',
+     a:'<p>A drawing’s job comes from where the file lives, so the fix depends on what’s actually wrong.</p><p>If the pop-up just took the wrong pick or a typo, and the file is sitting in the right folder: type <code class="k">CHJOB</code> and correct it. Nothing else changes.</p><p>If the work genuinely belongs to a different job: don’t just retype the job number — save or move the drawing into that job’s folder instead. The tracker adopts the new job automatically the moment that happens, the same way it does for a template. A file should never sit in one job’s folder while billing to another; that’s what keeps the records trustworthy.</p><p>Either way, time already logged before the fix stays where it was — flag your CAD manager if it needs moving too.</p>'},
     {q:'I skipped the pop-up and forgot about it',
      a:'<p>Nothing is lost — the drawing keeps tracking as <code class="k">UNASSIGNED</code>, and you’ll get an occasional command-line reminder. Run <code class="k">CHJOB</code> whenever it’s convenient; it re-files the time already logged onto the job you enter.</p>'},
     {q:'I have two (or more) drawings open at once',
@@ -1169,9 +1165,9 @@
     {q:'I stepped away for a meeting or a site visit',
      a:'<p>Nothing to do beforehand. After five minutes of no activity the clock pauses on its own, crediting the first five minutes and writing off the rest — see the demo on Sheet 04. Coming back and doing anything at all resumes it.</p>'},
     {q:'I want to double-check my hours before they get submitted',
-     a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> for a quick command-line total. For something to actually look at and filter, <code class="k">CHDASH</code> opens a full searchable page in your browser.</p>'},
+     a:'<p><code class="k">CHTODAY</code> or <code class="k">CHWEEK</code> gives a quick command-line total. For a specific job or a wider date range, <code class="k">CHFIND</code> lets you filter by period, user and job.</p>'},
     {q:'A drawing got saved into the wrong job folder',
-     a:'<p>Fix the job on the drawing itself with <code class="k">CHJOB</code> — the tracker only adopts a folder’s job automatically the moment a save happens, so correcting it there is enough going forward. If time already logged needs correcting too, flag it to your CAD manager; the records are plain CSV files and can be edited directly if needed.</p>'}
+     a:'<p>Move the drawing into the correct job’s folder — in Explorer, or with Save As from inside AutoCAD — rather than just correcting the job number with CHJOB. The tracker re-reads the folder the moment that save happens and adopts the right job automatically, which is what keeps the file’s location and its billing record pointing at the same place. If time was already logged under the wrong job before the move, flag it to your CAD manager; the records are plain CSV files and can be corrected directly if needed.</p>'}
   ];
   var sitList = document.getElementById('situations-list');
   SITUATIONS.forEach(function(s){
@@ -1189,9 +1185,9 @@
     {q:'No pop-up appeared when I opened a drawing',
      a:'<p>Two explanations cover almost every case. Run <code class="k">CHSTATUS</code> first — if it shows a job already set, look a line or two above it in the command-line history: the tracker announced what it found and why it didn’t need to ask (usually the job number was recognisable from the folder path). If instead it shows <code class="k">UNASSIGNED</code> and nothing was said, it was likely a template or an unsaved drawing — see Sheet 06.</p><p>If neither explains it, run <code class="k">CHDLG</code> to test the dialog on its own.</p>'},
     {q:'The wrong job number is showing',
-     a:'<p>Type <code class="k">CHJOB</code> and correct it — the tracker will never have silently guessed a job on its own without saying so; something in the drawing’s history or folder path pointed at the one it picked. Fixing it here is enough; it doesn’t affect any other drawing.</p>'},
+     a:'<p>Type <code class="k">CHJOB</code> and correct it — the tracker will never have silently guessed a job on its own without saying so; something in the drawing’s history or folder path pointed at the one it picked. Fixing it here is enough as long as the drawing is sitting in the right folder. If the file actually belongs to a different job, see Sheet 06 — save or move it into that job’s folder instead of just retyping the number.</p>'},
     {q:'I can’t find hours I know were logged',
-     a:'<p>Run <code class="k">CHDASHALL</code> rather than <code class="k">CHDASH</code> — the plain <code class="k">CHDASH</code> prompts for a period and it’s easy to end up scoped to just the current month. <code class="k">CHDASHALL</code> takes no prompts and always covers everything.</p>'},
+     a:'<p><code class="k">CHTODAY</code> and <code class="k">CHWEEK</code> only cover recent activity, so older work won’t show there. Run <code class="k">CHFIND</code> and enter <code class="k">ALL</code> for the period to search everything on record. If it still isn’t showing up, ask your CAD manager — they can pull a report across every drawing and user.</p>'},
     {q:'The pop-up appeared but won’t respond to clicks or typing',
      a:'<p>Close AutoCAD and reopen it, then run <code class="k">CHDLG</code> — it opens the same dialog in isolation and reports exactly what happened. Pass whatever it shows to your CAD manager; this is a configuration issue on that machine, not something to work around drawing by drawing.</p>'},
     {q:'Opening or closing a drawing feels slow',

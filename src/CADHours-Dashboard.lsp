@@ -217,7 +217,7 @@
 
 ;;; ---- command ---------------------------------------------------------------
 
-(defun c:CHDASH ( / *error* ans rng user job rows file)
+(defun c:CHDASH ( / *error*)
   (defun *error* (msg)
     (if (not (member msg '("Function cancelled" "quit / exit abort" "console break")))
       (princ (strcat "\n** CADHours: " msg))
@@ -225,6 +225,20 @@
     (princ)
   )
   (ch:cfg-load)
+  (if (not (ch:is-admin))
+    (progn
+      (ch:say "The shared dashboard is limited to your CAD manager on this install.")
+      (ch:say "CHTODAY, CHWEEK and CHJOBHOURS cover your own hours from the command line.")
+    )
+    (ch:dash-run)
+  )
+  (princ)
+)
+
+;;; The real body of CHDASH, split out so the permission check above can
+;;; short-circuit it cleanly rather than nesting the whole command inside
+;;; one more level of (if ...).
+(defun ch:dash-run ( / ans rng user job rows file)
   (setq ans (ch:trim
               (getstring T "\nPeriod [date | TODAY | WEEK | MONTH | ALL | n days] <MONTH>: ")))
   (if (= ans "") (setq ans "MONTH"))
@@ -268,8 +282,19 @@
 ;;; user, with no prompts.  This is the one to use as an end-of-day
 ;;; habit, or from a scheduled run - there is nothing to type and no
 ;;; chance of leaving the period on month-to-date by accident.
-(defun c:CHDASHALL ( / rows span file)
+(defun c:CHDASHALL ()
   (ch:cfg-load)
+  (if (not (ch:is-admin))
+    (progn
+      (ch:say "The shared dashboard is limited to your CAD manager on this install.")
+      (ch:say "CHTODAY, CHWEEK and CHJOBHOURS cover your own hours from the command line.")
+    )
+    (ch:dashall-run)
+  )
+  (princ)
+)
+
+(defun ch:dashall-run ( / rows span file)
   (ch:say "Rebuilding the dashboard from every recorded session...")
   (setq rows (ch:load-rows "0000-01-01" "9999-12-31"))
   (if (null rows)
@@ -294,7 +319,7 @@
 )
 
 
-(ch:module "Dashboard" "1.3.3")
+(ch:module "Dashboard" "1.4.0")
 
 (princ)
 ;;; ============================================================ EOF

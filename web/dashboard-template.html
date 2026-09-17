@@ -140,9 +140,8 @@
       <th data-k="0">Group</th>
       <th class="n" data-k="1">Hours</th>
       <th class="n" data-k="2">Decimal</th>
-      <th class="n" data-k="3">Idle</th>
-      <th class="n" data-k="4">Sessions</th>
-      <th class="n" data-k="5">Share</th>
+      <th class="n" data-k="3">Sessions</th>
+      <th class="n" data-k="4">Share</th>
       <th class="barcell"></th>
     </tr></thead>
     <tbody></tbody>
@@ -167,7 +166,6 @@
       <th data-k="task">Task</th>
       <th data-k="dwg">Drawing</th>
       <th class="n" data-k="active">Hours</th>
-      <th class="n" data-k="idle">Idle</th>
       <th data-k="status">Status</th>
     </tr></thead>
     <tbody></tbody>
@@ -221,7 +219,6 @@
     var o = {};
     COLS.forEach(function (c, i) { o[c] = r[i]; });
     o.active  = +o.active || 0;
-    o.idle    = +o.idle   || 0;
     o.manager = o.manager || "";     // rows logged before managers existed
     return o;
   });
@@ -233,6 +230,15 @@
     return h + ":" + String(m % 60).padStart(2, "0");
   }
   function dec(secs) { return (secs / 3600).toFixed(2); }
+  function to12h(stamp) {
+    // stamp is "YYYY-MM-DD HH:MM:SS" - pull the hour/minute straight out
+    // rather than parsing a Date, so it reads exactly what was logged
+    // regardless of the viewer's own time zone.
+    var hh = +stamp.slice(11, 13), mm = stamp.slice(14, 16);
+    if (isNaN(hh)) return "";
+    var ap = hh >= 12 ? "PM" : "AM", h12 = hh % 12 || 12;
+    return h12 + ":" + mm + " " + ap;
+  }
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -299,8 +305,8 @@
     var map = Object.create(null);
     rows.forEach(function (r) {
       var k = groupKey(r, spec);
-      var e = map[k] || (map[k] = { k: k, active: 0, idle: 0, n: 0 });
-      e.active += r.active; e.idle += r.idle; e.n += 1;
+      var e = map[k] || (map[k] = { k: k, active: 0, n: 0 });
+      e.active += r.active; e.n += 1;
     });
     return Object.keys(map).map(function (k) { return map[k]; });
   }
@@ -314,7 +320,6 @@
     var cell = [function (e) { return e.k; },
                 function (e) { return e.active; },
                 function (e) { return e.active; },
-                function (e) { return e.idle; },
                 function (e) { return e.n; },
                 function (e) { return e.active; }][pivotSort.k];
     data.sort(function (a, b) {
@@ -333,7 +338,6 @@
       return "<tr><td>" + esc(e.k) + "</td>" +
              '<td class="n">' + hhmm(e.active) + "</td>" +
              '<td class="n">' + dec(e.active) + "</td>" +
-             '<td class="n muted">' + hhmm(e.idle) + "</td>" +
              '<td class="n">' + e.n + "</td>" +
              '<td class="n">' + pct.toFixed(1) + "%</td>" +
              '<td class="barcell"><span class="bar" style="width:' +
@@ -344,7 +348,6 @@
       "<tr><td>TOTAL</td>" +
       '<td class="n">' + hhmm(total) + "</td>" +
       '<td class="n">' + dec(total) + "</td>" +
-      '<td class="n">' + hhmm(data.reduce(function (a, e) { return a + e.idle; }, 0)) + "</td>" +
       '<td class="n">' + data.reduce(function (a, e) { return a + e.n; }, 0) + "</td>" +
       '<td class="n">100%</td><td></td></tr>';
   }
@@ -353,7 +356,6 @@
 
   function renderCards(rows) {
     var total = rows.reduce(function (a, r) { return a + r.active; }, 0);
-    var idle  = rows.reduce(function (a, r) { return a + r.idle; }, 0);
     var days  = uniqCount(rows, "date"), running = rows.filter(function (r) {
       return r.status === "RUNNING";
     }).length;
@@ -365,8 +367,7 @@
       ["Managers", uniqCount(rows, "manager")],
       ["Drawings", uniqCount(rows, "dwg")],
       ["Days worked", days],
-      ["Avg per day", days ? hhmm(total / days) : "0:00"],
-      ["Idle discarded", hhmm(idle)]
+      ["Avg per day", days ? hhmm(total / days) : "0:00"]
     ];
     $("cards").innerHTML = cards.map(function (c) {
       return '<div class="card"><div class="k">' + c[0] + '</div><div class="v">' + c[1] + "</div></div>";
@@ -392,15 +393,14 @@
     $("detailCount").textContent = "(" + data.length + ")";
     $("detail").tBodies[0].innerHTML = data.map(function (r) {
       return "<tr><td>" + esc(r.date) + "</td>" +
-             "<td>" + esc(r.start.slice(11, 16)) + "</td>" +
-             "<td>" + esc(r.end.slice(11, 16)) + "</td>" +
+             "<td>" + esc(to12h(r.start)) + "</td>" +
+             "<td>" + esc(to12h(r.end)) + "</td>" +
              "<td>" + esc(r.user) + "</td>" +
              "<td>" + esc(r.job) + "</td>" +
              "<td>" + esc(r.manager) + "</td>" +
              "<td>" + esc(r.task) + "</td>" +
              '<td title="' + esc(r.path) + '">' + esc(r.dwg) + "</td>" +
              '<td class="n">' + hhmm(r.active) + "</td>" +
-             '<td class="n muted">' + hhmm(r.idle) + "</td>" +
              "<td>" + (r.status === "RUNNING"
                         ? '<span class="pill run">running</span>'
                         : '<span class="pill">' + esc(r.status.toLowerCase()) + "</span>") +
@@ -427,13 +427,14 @@
 
   $("dlPivot").addEventListener("click", function () {
     download("cadhours-summary.csv", csv(
-      [[$("grp").value, "hours_hhmm", "hours_decimal", "idle_hhmm", "sessions"]].concat(
-        lastPivot.map(function (e) { return [e.k, hhmm(e.active), dec(e.active), hhmm(e.idle), e.n]; }))));
+      [[$("grp").value, "hours_hhmm", "hours_decimal", "sessions"]].concat(
+        lastPivot.map(function (e) { return [e.k, hhmm(e.active), dec(e.active), e.n]; }))));
   });
+  var DL_COLS = COLS.filter(function (c) { return c !== "idle"; });
   $("dlDetail").addEventListener("click", function () {
     download("cadhours-sessions.csv", csv(
-      [COLS].concat(lastRows.map(function (r) {
-        return COLS.map(function (c) { return r[c]; });
+      [DL_COLS].concat(lastRows.map(function (r) {
+        return DL_COLS.map(function (c) { return c === "start" || c === "end" ? to12h(r[c]) : r[c]; });
       }))));
   });
 
