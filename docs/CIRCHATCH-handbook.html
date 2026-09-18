@@ -1,0 +1,980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Circle Hatch Handbook</title>
+<meta name="description" content="How CIRCHATCH fills window-selected circles with a solid hatch on your current layer — with a hands-on selection demo, the guardrails it enforces, and a troubleshooting reference.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============================= TOKENS ============================= */
+  :root{
+    --paper:#F6F7F3; --surface:#FFFFFF; --surface-2:#EDEFE8;
+    --ink:#1C2430; --ink-soft:#57616B; --ink-faint:#8A93A0;
+    --line:#D9DED0; --line-strong:#B9C0AD;
+    --blue:#1D5FA8; --blue-ink:#123E70; --blue-soft:#E6EEF7;
+    --red:#C1392B; --red-ink:#7C2119; --red-soft:#FBEAE6;
+    --green:#2E7A50; --green-ink:#1D5236; --green-soft:#E7F3EB;
+    --amber:#A5680B; --amber-ink:#6E4507; --amber-soft:#FBF1E1;
+    --shadow: 0 1px 2px rgba(28,36,48,.06), 0 8px 24px -12px rgba(28,36,48,.18);
+    --radius: 3px;
+    --font-display:'Big Shoulders Display',system-ui,sans-serif;
+    --font-body:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+    --font-mono:'IBM Plex Mono',ui-monospace,'SF Mono',Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#14171A; --surface:#1B1F23; --surface-2:#21262B;
+      --ink:#E9EBE6; --ink-soft:#A8B0B8; --ink-faint:#707880;
+      --line:#2B3136; --line-strong:#3A4147;
+      --blue:#6FA8DC; --blue-ink:#BFE0FF; --blue-soft:#1E2C3B;
+      --red:#E2695C; --red-ink:#FFD3CC; --red-soft:#33211E;
+      --green:#6FC08B; --green-ink:#CFEFDA; --green-soft:#1C2C22;
+      --amber:#D9A441; --amber-ink:#FFE6B8; --amber-soft:#332A17;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14171A; --surface:#1B1F23; --surface-2:#21262B;
+    --ink:#E9EBE6; --ink-soft:#A8B0B8; --ink-faint:#707880;
+    --line:#2B3136; --line-strong:#3A4147;
+    --blue:#6FA8DC; --blue-ink:#BFE0FF; --blue-soft:#1E2C3B;
+    --red:#E2695C; --red-ink:#FFD3CC; --red-soft:#33211E;
+    --green:#6FC08B; --green-ink:#CFEFDA; --green-soft:#1C2C22;
+    --amber:#D9A441; --amber-ink:#FFE6B8; --amber-soft:#332A17;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  /* ============================= BASE ============================= */
+  *,*::before,*::after{box-sizing:border-box}
+  html{ color-scheme:light; }
+  body{
+    margin:0; padding:0; padding-inline:0;
+    background:var(--paper); color:var(--ink);
+    font-family:var(--font-body); font-size:15px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  img{ max-width:100%; }
+  h1,h2,h3,h4{ font-family:var(--font-display); font-weight:700; text-transform:uppercase;
+    letter-spacing:.01em; text-wrap:balance; margin:0; color:var(--ink); }
+  p{ margin:0; }
+  a{ color:var(--blue); }
+  code,.mono{ font-family:var(--font-mono); }
+  ::selection{ background:var(--blue-soft); }
+  button{ font-family:inherit; }
+  :focus-visible{ outline:2px solid var(--blue); outline-offset:2px; }
+  .sr-only{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+  .hscroll{ overflow-x:auto; scrollbar-width:thin; }
+
+  /* ============================= TITLE BLOCK ============================= */
+  .titleblock{
+    position:sticky; top:env(safe-area-inset-top,0px); z-index:40;
+    background:var(--surface); border-bottom:2px solid var(--ink);
+    display:flex; align-items:stretch; flex-wrap:wrap;
+  }
+  .titleblock-main{
+    flex:1 1 320px; display:flex; align-items:center; gap:.9rem;
+    padding:.75rem 1.1rem; border-right:1px solid var(--line); min-width:0;
+  }
+  .titleblock-mark{
+    width:40px; height:40px; flex:none; border:2px solid var(--ink); border-radius:50%;
+    display:grid; place-items:center; position:relative;
+  }
+  .titleblock-mark svg{ width:22px; height:22px; stroke:var(--ink); }
+  .titleblock-text{ min-width:0; }
+  .titleblock-text .kicker{
+    font-family:var(--font-mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink-faint);
+  }
+  .titleblock-text h1{ font-size:clamp(1.25rem,3.4vw,1.7rem); line-height:1.05; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis; }
+  .titleblock-cells{ display:flex; }
+  .tb-cell{
+    display:flex; flex-direction:column; justify-content:center; gap:.15rem;
+    padding:.6rem 1rem; border-right:1px solid var(--line); min-width:104px;
+  }
+  .tb-cell:last-child{ border-right:none; }
+  .tb-cell .k{ font-family:var(--font-mono); font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-faint); }
+  .tb-cell .v{ font-family:var(--font-mono); font-size:12.5px; font-weight:600; color:var(--ink); }
+  .theme-toggle{ display:flex; align-items:center; gap:.3rem; padding:.6rem 1rem; border-left:1px solid var(--line); }
+  .theme-toggle button{
+    border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-soft);
+    width:30px; height:30px; border-radius:var(--radius); cursor:pointer; display:grid; place-items:center;
+  }
+  .theme-toggle button[aria-pressed="true"]{ background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .theme-toggle svg{ width:15px; height:15px; }
+
+  /* ============================= SHELL / NAV RAIL ============================= */
+  .shell{ display:flex; align-items:flex-start; max-width:1180px; margin:0 auto; }
+  .railwrap{
+    position:sticky; top:calc(env(safe-area-inset-top,0px) + 66px);
+    flex:none; width:216px; padding:1.4rem 0 3rem 1rem;
+    max-height:calc(100vh - 66px); overflow-y:auto;
+  }
+  nav.rail{ display:flex; flex-direction:column; }
+  .rail button{
+    all:unset; cursor:pointer; display:flex; align-items:center; gap:.55rem;
+    font-family:var(--font-mono); font-size:12.5px; font-weight:500; color:var(--ink-soft);
+    padding:.5rem .65rem .5rem .1rem; border-left:3px solid transparent; border-bottom:1px solid var(--line);
+  }
+  .rail button .num{ color:var(--ink-faint); font-variant-numeric:tabular-nums; width:1.4em; flex:none; }
+  .rail button:hover{ color:var(--ink); background:var(--surface-2); }
+  .rail button[aria-current="true"]{
+    color:var(--blue-ink); border-left-color:var(--blue); background:var(--blue-soft); font-weight:600;
+  }
+  .rail-foot{ margin-top:1rem; padding:.75rem .65rem; border-top:1px dashed var(--line-strong); }
+  .rail-foot p{ font-size:11.5px; color:var(--ink-faint); line-height:1.55; }
+  .mobile-rail{ display:none; }
+  main{ flex:1 1 auto; min-width:0; padding:1.6rem 1.2rem 4rem; }
+
+  /* ============================= SHEETS ============================= */
+  .sheet{ margin-bottom:2.4rem; scroll-margin-top:120px; }
+  .sheet-head{
+    display:flex; align-items:baseline; gap:.7rem; padding-bottom:.5rem;
+    border-bottom:2px solid var(--ink); margin-bottom:1.1rem; flex-wrap:wrap;
+  }
+  .sheet-head .sheet-no{
+    font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--blue);
+    border:1px solid var(--blue); border-radius:2px; padding:.05rem .4rem;
+  }
+  .sheet-head h2{ font-size:clamp(1.5rem,4vw,2.1rem); }
+  .sheet > .lede{ font-size:16px; color:var(--ink-soft); max-width:62ch; margin-bottom:1.3rem; }
+
+  .card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+  .pad{ padding:1.1rem 1.2rem; }
+
+  .note{
+    display:flex; gap:.65rem; padding:.85rem 1rem; border-radius:var(--radius);
+    border:1px solid var(--line); background:var(--surface); margin:1rem 0; max-width:66ch;
+  }
+  .note svg{ width:18px; height:18px; flex:none; margin-top:.15rem; }
+  .note .t{ font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:600; margin-bottom:.2rem; }
+  .note p{ font-size:13.5px; color:var(--ink-soft); line-height:1.55; }
+  .note p code{ font-size:12.5px; }
+  .note.tip{ border-color:var(--blue); background:var(--blue-soft); }
+  .note.tip svg{ stroke:var(--blue); } .note.tip .t{ color:var(--blue-ink); }
+  .note.warn{ border-color:var(--red); background:var(--red-soft); border-style:dashed; }
+  .note.warn svg{ stroke:var(--red); } .note.warn .t{ color:var(--red-ink); }
+  .note.ok{ border-color:var(--green); background:var(--green-soft); }
+  .note.ok svg{ stroke:var(--green); } .note.ok .t{ color:var(--green-ink); }
+
+  code.k{
+    font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--blue-ink);
+    background:var(--blue-soft); border:1px solid var(--line); border-radius:3px; padding:.08rem .38rem;
+    white-space:nowrap;
+  }
+
+  /* ============================= STEP TIMELINE ============================= */
+  .steps{ display:flex; flex-direction:column; }
+  .step{ display:grid; grid-template-columns:34px 1fr; gap:0 1rem; }
+  .step-rail{ display:flex; flex-direction:column; align-items:center; }
+  .step-dot{
+    width:34px; height:34px; border-radius:50%; border:2px solid var(--ink);
+    display:grid; place-items:center; background:var(--surface); flex:none;
+    font-family:var(--font-mono); font-weight:700; font-size:13px;
+  }
+  .step-line{ width:2px; flex:1; background:var(--line-strong); min-height:14px; }
+  .step:last-child .step-line{ display:none; }
+  .step-body{ padding-bottom:1.5rem; }
+  .step-body h3{ font-size:1.02rem; text-transform:none; letter-spacing:0; font-weight:700; margin-bottom:.25rem; }
+  .step-body p{ font-size:13.7px; color:var(--ink-soft); max-width:56ch; }
+  .step-auto .step-dot{ border-style:dashed; color:var(--ink-faint); border-color:var(--line-strong); }
+  .step-auto .step-body h3{ color:var(--ink-soft); }
+  .tag-auto{
+    font-family:var(--font-mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-faint); border:1px solid var(--line-strong); border-radius:2px; padding:.05rem .35rem;
+    margin-left:.4rem; vertical-align:middle;
+  }
+
+  /* ============================= QUICK REFERENCE ============================= */
+  .qr-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+  .qr-cell{ background:var(--surface); padding:.9rem 1rem; }
+  .qr-cell h4{ font-size:11px; letter-spacing:.08em; color:var(--ink-faint); margin-bottom:.5rem; }
+  .qr-cell .big{ font-family:var(--font-mono); font-size:1.25rem; font-weight:600; color:var(--ink); }
+  .qr-cell p{ font-size:12.5px; color:var(--ink-soft); margin-top:.3rem; line-height:1.5; }
+  .qr-cmdlist{ display:flex; flex-direction:column; gap:.35rem; }
+  .qr-cmdlist .r{ display:flex; gap:.6rem; font-size:12.5px; }
+  .qr-cmdlist code{ flex:none; width:104px; }
+  .print-btn{
+    display:inline-flex; align-items:center; gap:.45rem; margin-top:1rem;
+    font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--ink-soft);
+    border:1px solid var(--line-strong); background:var(--surface); border-radius:3px; padding:.5rem .9rem; cursor:pointer;
+  }
+  .print-btn:hover{ color:var(--ink); border-color:var(--ink); }
+  .print-btn svg{ width:14px; height:14px; }
+
+  /* ============================= COMMAND LIST (accordion, no search needed) ============================= */
+  .cmd-table{ border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; background:var(--surface); }
+  .cmd-row{ border-bottom:1px solid var(--line); }
+  .cmd-row:last-child{ border-bottom:none; }
+  .cmd-row summary{
+    list-style:none; cursor:pointer; display:grid;
+    grid-template-columns:132px 74px 1fr 20px; gap:.8rem; align-items:center;
+    padding:.65rem 1rem; font-size:13px;
+  }
+  .cmd-row summary::-webkit-details-marker{ display:none; }
+  .cmd-row summary .cname{ font-family:var(--font-mono); font-weight:700; color:var(--blue-ink); font-size:13px; }
+  .cmd-row summary .ccat{
+    font-family:var(--font-mono); font-size:9.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); border:1px solid var(--line-strong); border-radius:2px; padding:.1rem .35rem; justify-self:start;
+  }
+  .cmd-row summary .ccat.custom{ color:var(--blue-ink); border-color:var(--blue); }
+  .cmd-row summary .cshort{ color:var(--ink-soft); font-size:12.8px; }
+  .cmd-row summary .chev{ transition:transform .15s ease; color:var(--ink-faint); }
+  .cmd-row[open] summary .chev{ transform:rotate(90deg); }
+  .cmd-row .cdetail{ padding:0 1rem 1rem 1rem; }
+  .cmd-row .cdetail p{ font-size:13px; color:var(--ink-soft); max-width:64ch; margin-bottom:.4rem; }
+  @media (max-width:620px){
+    .cmd-row summary{ grid-template-columns:1fr 20px; row-gap:.3rem; }
+    .cmd-row summary .ccat{ grid-column:1; order:3; }
+  }
+
+  /* ============================= ACCORDION (situations / troubleshooting) ============================= */
+  .qa{ border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); margin-bottom:.6rem; overflow:hidden; }
+  .qa summary{
+    list-style:none; cursor:pointer; padding:.85rem 1rem; font-weight:600; font-size:14px;
+    display:flex; justify-content:space-between; align-items:center; gap:.8rem;
+  }
+  .qa summary::-webkit-details-marker{ display:none; }
+  .qa summary .chev{ flex:none; color:var(--ink-faint); transition:transform .15s ease; }
+  .qa[open] summary .chev{ transform:rotate(90deg); }
+  .qa .qa-body{ padding:0 1.1rem 1rem; border-top:1px solid var(--line); padding-top:.8rem; }
+  .qa .qa-body p{ font-size:13.6px; color:var(--ink-soft); max-width:66ch; margin-bottom:.6rem; }
+  .qa .qa-body p:last-child{ margin-bottom:0; }
+
+  footer.colophon{
+    max-width:1180px; margin:0 auto; padding:1.4rem 1.2rem 3rem; border-top:1px dashed var(--line-strong);
+    font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;
+  }
+
+  /* ============================= SELECTION / HATCH DEMO ============================= */
+  .demo-toolbar{ display:flex; flex-wrap:wrap; gap:1.2rem; align-items:flex-start; margin-bottom:.9rem; }
+  .demo-control-group{ display:flex; flex-direction:column; gap:.4rem; }
+  .demo-control-group h5{
+    font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); font-weight:600;
+  }
+  .layer-swatch-row{ display:flex; gap:.4rem; flex-wrap:wrap; }
+  .layer-swatch{
+    display:flex; align-items:center; gap:.4rem; border:1px solid var(--line-strong); border-radius:20px;
+    padding:.32rem .65rem .32rem .45rem; cursor:pointer; font-family:var(--font-mono); font-size:11.5px;
+    background:var(--surface); color:var(--ink-soft);
+  }
+  .layer-swatch .dot{ width:12px; height:12px; border-radius:50%; display:inline-block; border:1px solid rgba(0,0,0,.25); flex:none; }
+  .layer-swatch[aria-pressed="true"]{ border-color:var(--ink); color:var(--ink); font-weight:600; background:var(--surface-2); }
+  .lock-row label{
+    display:flex; gap:.5rem; align-items:center; font-size:12.8px; color:var(--ink-soft); cursor:pointer;
+    border:1px solid var(--line-strong); border-radius:var(--radius); padding:.4rem .7rem; background:var(--surface);
+  }
+  .lock-row input{ width:15px; height:15px; accent-color:var(--red); }
+  .btn-mini{
+    font-family:var(--font-mono); font-size:11px; font-weight:600; border:1px solid var(--line-strong);
+    background:var(--surface); color:var(--ink-soft); border-radius:2px; padding:.5rem .7rem; cursor:pointer; white-space:nowrap; align-self:flex-end;
+  }
+  .btn-mini:hover{ border-color:var(--blue); color:var(--blue-ink); }
+  .btn-mini.reset{ border-color:var(--line-strong); }
+
+  .stage-wrap{
+    position:relative; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+    background:var(--surface); touch-action:none; box-shadow:var(--shadow);
+  }
+  .stage-wrap.blocked{ animation:stageBlocked .5s ease; }
+  @keyframes stageBlocked{
+    0%,100%{ box-shadow:var(--shadow); } 30%{ box-shadow:0 0 0 3px var(--red); } 60%{ box-shadow:0 0 0 1px var(--red); }
+  }
+  svg#circ-stage{ display:block; width:100%; height:auto; cursor:crosshair; background:var(--paper); }
+  .stage-grid-line{ stroke:var(--line); stroke-width:1; }
+  .stage-shape-other{ fill:none; stroke-dasharray:4 3; }
+  .stage-shape-label{ font-family:var(--font-mono); font-size:9.5px; fill:var(--ink-faint); }
+  .stage-circle{ fill:none; stroke-width:2; transition:fill .25s ease; }
+  .stage-circle.hatched{ fill-opacity:1; }
+  .stage-flash{ animation:stageFlash .6s ease; }
+  @keyframes stageFlash{ 0%,100%{ stroke:inherit; } 40%{ stroke:var(--red); stroke-width:2.5; } }
+  .marquee-window{ fill:rgba(29,95,168,.16); stroke:#1D5FA8; stroke-width:1.4; }
+  .marquee-crossing{ fill:rgba(46,122,80,.16); stroke:#2E7A50; stroke-width:1.4; stroke-dasharray:5 3; }
+
+  .mode-legend{ display:flex; gap:1rem; flex-wrap:wrap; font-size:11.5px; color:var(--ink-soft); margin:.7rem 0; }
+  .mode-legend span{ display:inline-flex; align-items:center; gap:.4rem; }
+  .mode-legend i{ width:16px; height:11px; border-radius:2px; display:inline-block; }
+  .mode-legend i.win{ background:rgba(29,95,168,.35); border:1.4px solid #1D5FA8; }
+  .mode-legend i.cross{ background:rgba(46,122,80,.35); border:1.4px dashed #2E7A50; }
+
+  .stats-row{ display:flex; gap:1rem; flex-wrap:wrap; margin:.9rem 0; }
+  .stat{ flex:1 1 140px; border:1px solid var(--line); border-radius:var(--radius); padding:.65rem .85rem; background:var(--surface); }
+  .stat .st-k{ font-family:var(--font-mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); }
+  .stat .st-v{ font-family:var(--font-mono); font-size:1.3rem; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat.hatched .st-v{ color:var(--green-ink); }
+  .stat.skipped .st-v{ color:var(--ink-faint); }
+
+  .cmdline{
+    font-family:var(--font-mono); font-size:12px; line-height:1.6;
+    background:#1B1F23; color:#D7DBE0; border-radius:3px; padding:.75rem .9rem;
+    max-height:170px; overflow-y:auto; white-space:pre-wrap;
+  }
+  .cmdline .ln{ margin:0; }
+  .cmdline .ln.prompt{ color:#8FB4E0; }
+  .cmdline .ln.ok{ color:#8FD19E; }
+  .cmdline .ln.warn{ color:#E2B268; }
+  .cmdline .ln.err{ color:#E2695C; font-weight:600; }
+  .cmdline .empty{ color:#6C7680; font-style:italic; }
+  .cmdline-label{
+    font-family:var(--font-mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-faint); margin-bottom:.4rem;
+  }
+
+  /* ============================= RESPONSIVE ============================= */
+  @media (max-width:900px){
+    .railwrap{ display:none; }
+    .mobile-rail{
+      display:block; position:sticky; top:calc(env(safe-area-inset-top,0px) + 66px); z-index:30;
+      background:var(--surface); border-bottom:1px solid var(--line); overflow-x:auto;
+    }
+    .mobile-rail-inner{ display:flex; gap:0; padding:0 .4rem; min-width:max-content; }
+    .mobile-rail button{
+      all:unset; cursor:pointer; font-family:var(--font-mono); font-size:11.5px; font-weight:600;
+      color:var(--ink-soft); padding:.65rem .7rem; border-bottom:3px solid transparent; white-space:nowrap;
+    }
+    .mobile-rail button[aria-current="true"]{ color:var(--blue-ink); border-bottom-color:var(--blue); }
+    main{ padding:1.3rem 1rem 3rem; }
+    .titleblock-cells{ display:none; }
+  }
+  @media (max-width:480px){
+    .titleblock-text h1{ font-size:1.15rem; }
+    .titleblock-mark{ width:32px; height:32px; }
+    .titleblock-mark svg{ width:17px; height:17px; }
+  }
+
+  /* ============================= PRINT ============================= */
+  @media print{
+    .titleblock, .railwrap, .mobile-rail, .theme-toggle, .print-btn, footer.colophon { display:none !important; }
+    .sheet:not(#quickref){ display:none !important; }
+    body{ background:#fff; color:#000; font-size:11pt; }
+    .qr-grid{ break-inside:avoid; }
+    a{ color:#000; text-decoration:none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================================ TITLE BLOCK ============================================================ -->
+<header class="titleblock">
+  <div class="titleblock-main">
+    <div class="titleblock-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5v15M4.5 12h15" stroke-dasharray="1.6 2.2" opacity=".5"/></svg>
+    </div>
+    <div class="titleblock-text">
+      <div class="kicker">Standard Operating Procedure</div>
+      <h1>Circle Hatch Handbook</h1>
+    </div>
+  </div>
+  <div class="titleblock-cells hscroll">
+    <div class="tb-cell"><span class="k">Command</span><span class="v">CIRCHATCH</span></div>
+    <div class="tb-cell"><span class="k">Hatch layer</span><span class="v">Current (CLAYER)</span></div>
+    <div class="tb-cell"><span class="k">Rev</span><span class="v" id="tb-date">—</span></div>
+  </div>
+  <div class="theme-toggle" role="group" aria-label="Theme">
+    <button type="button" id="theme-light" aria-pressed="false" title="Light">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.6 4.6l1.7 1.7M17.7 17.7l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.6 19.4l1.7-1.7M17.7 6.3l1.7-1.7"/></svg>
+    </button>
+    <button type="button" id="theme-dark" aria-pressed="false" title="Dark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.2A8.2 8.2 0 1 1 9.8 4a6.4 6.4 0 0 0 10.2 10.2Z"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="mobile-rail" aria-label="Sections">
+  <div class="mobile-rail-inner" id="mobile-rail-inner"></div>
+</nav>
+
+<div class="shell">
+  <div class="railwrap">
+    <nav class="rail" id="rail" aria-label="Sections"></nav>
+    <div class="rail-foot">
+      <p>This covers everyday use of CIRCHATCH — selecting circles and hatching them on your current layer. Loading the routine into AutoCAD (APPLOAD, or a startup suite) is covered separately by whoever manages your CAD setup.</p>
+    </div>
+  </div>
+
+  <main>
+
+    <!-- 01 — OVERVIEW ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="overview" data-title="Overview">
+      <div class="sheet-head"><span class="sheet-no">01</span><h2>Overview</h2></div>
+      <p class="lede">One command that fills every circle in a selection with a solid hatch, always on whatever layer is current when you run it. This page is the reference for using it — not for installing it.</p>
+
+      <div class="card pad" style="margin-bottom:1.1rem;">
+        <p style="font-size:14.5px; color:var(--ink-soft); max-width:68ch; margin-bottom:.6rem;">
+          Set the layer you want the fill to land on as current, run <code class="k">CIRCHATCH</code>, and select circles the same way you'd select anything else in AutoCAD — window, crossing, fence, or one at a time holding Shift. Press Enter, and every circle in that selection gets its own associative SOLID hatch.
+        </p>
+        <p style="font-size:14.5px; color:var(--ink-soft); max-width:68ch;">
+          Anything in the selection that isn't a CIRCLE entity — walls, blocks, text, something round that was actually drawn with ELLIPSE — is left exactly as it was. Nothing else in the drawing is touched, and a circle's own layer never changes.
+        </p>
+      </div>
+
+      <div class="qr-grid">
+        <div class="qr-cell"><h4>Selection filter</h4><div class="big">CIRCLE only</div><p>Anything else caught in the window — text, blocks, lines, an ELLIPSE-drawn circle — is ignored automatically.</p></div>
+        <div class="qr-cell"><h4>Hatch pattern</h4><div class="big">SOLID, associative</div><p>Stretch or move the circle later and the fill follows it.</p></div>
+        <div class="qr-cell"><h4>Hatch layer</h4><div class="big">Whatever's current</div><p>Set it before you run the command — not the circle's own layer, whatever that happens to be.</p></div>
+        <div class="qr-cell"><h4>Locked current layer</h4><div class="big">Blocked, on purpose</div><p>The command stops before it even asks you to select anything, and says so.</p></div>
+      </div>
+
+      <div class="note tip">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.2v.1"/></svg>
+        <div><div class="t">Worth knowing up front</div><p>The command line reports exactly what happened once it's done — how many circles were hatched, and, only if it occurred, how many objects couldn't be. That one line is worth reading before assuming a run did or didn't work.</p></div>
+      </div>
+    </section>
+
+    <!-- 02 — DAILY WORKFLOW ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="workflow" data-title="Daily Workflow">
+      <div class="sheet-head"><span class="sheet-no">02</span><h2>Daily Workflow</h2></div>
+      <p class="lede">What actually happens, in order, from setting a layer to reading the result. The step marked <span class="tag-auto">automatic</span> needs nothing from you.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">1</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Set your current layer</h3>
+            <p>Click a layer name in the Layers panel (or type <code class="k">CLAYER</code>) so it shows as current. This is the layer every hatch from this run lands on, regardless of what layer the circles themselves live on.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">2</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Run CIRCHATCH</h3>
+            <p>Type it at the command line, same as <span class="mono">LINE</span> or <span class="mono">ZOOM</span>.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">3</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Select circles</h3>
+            <p>Window, crossing, fence, pick one at a time with Shift — anything AutoCAD's normal selection accepts. Press Enter when you're done.</p>
+          </div>
+        </div>
+        <div class="step step-auto">
+          <div class="step-rail"><div class="step-dot">4</div><div class="step-line"></div></div>
+          <div class="step-body">
+            <h3>Each circle gets hatched<span class="tag-auto">automatic</span></h3>
+            <p>Every CIRCLE entity in the selection gets its own solid, associative hatch on your current layer. Anything else you swept up in the same window is skipped without complaint.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-rail"><div class="step-dot">5</div></div>
+          <div class="step-body">
+            <h3>Read the result</h3>
+            <p>One line on the command line: how many circles were hatched, and — only if it happened — how many couldn't be.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="note warn">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4.2M12 17v.1"/></svg>
+        <div><div class="t">Locked current layer</div><p>CIRCHATCH checks before it does anything else. If the layer that's current is locked, it says so immediately and stops — it will not switch you to a different layer or ask which one to use instead. Unlock it, or make a different layer current, and run the command again.</p></div>
+      </div>
+    </section>
+
+    <!-- 03 — TRY IT (interactive selection + hatch demo) ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="practice" data-title="Try It">
+      <div class="sheet-head"><span class="sheet-no">03</span><h2>Try It</h2></div>
+      <p class="lede">A small drafting scene: six circles on three different layers, plus a few things that aren't circles at all. Pick a current layer below, then drag a selection box across the scene the way you would in AutoCAD.</p>
+
+      <div class="demo-toolbar">
+        <div class="demo-control-group">
+          <h5>Current layer (CLAYER)</h5>
+          <div class="layer-swatch-row" id="layer-swatches" role="group" aria-label="Current layer"></div>
+        </div>
+        <div class="demo-control-group">
+          <h5>Guardrail</h5>
+          <div class="lock-row">
+            <label><input type="checkbox" id="lock-toggle"> Simulate a locked current layer</label>
+          </div>
+        </div>
+        <button class="btn-mini reset" id="stage-reset" type="button">Reset scene</button>
+      </div>
+
+      <div class="mode-legend">
+        <span><i class="win"></i> Window (drag left→right) — only circles fully inside are hatched</span>
+        <span><i class="cross"></i> Crossing (drag right→left) — a circle merely touched counts too</span>
+      </div>
+
+      <div class="stage-wrap" id="stage-wrap">
+        <svg id="circ-stage" viewBox="0 0 640 380" role="img" aria-label="A drafting scene with six circles on three layers, a dashed rectangle labeled EQUIP, a leader line, a text label, and a dashed shape labeled ELLIPSE drawn with the ELLIPSE command. Drag across it to select.">
+          <defs>
+            <pattern id="stagegrid" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M20 0H0V20" fill="none" class="stage-grid-line"/>
+            </pattern>
+          </defs>
+          <rect x="0" y="0" width="640" height="380" fill="url(#stagegrid)"/>
+
+          <!-- non-circle distractors -->
+          <rect id="s-rect" class="stage-shape-other" x="290" y="250" width="76" height="54" rx="2" style="stroke:#C97A3D"/>
+          <text class="stage-shape-label" x="292" y="243">EQUIP (block)</text>
+
+          <line id="s-line" class="stage-shape-other" x1="30" y1="345" x2="175" y2="325" style="stroke:#9AA3AD"/>
+          <text class="stage-shape-label" x="30" y="360">LINE</text>
+
+          <text id="s-text" class="stage-shape-label" x="225" y="140" font-size="13">TYP.</text>
+
+          <ellipse id="s-ellipse" class="stage-shape-other" cx="582" cy="300" rx="34" ry="18" style="stroke:#9B59B6"/>
+          <text class="stage-shape-label" x="536" y="326">drawn with ELLIPSE</text>
+
+          <!-- circles, on three different "layers" (their own outline colors) -->
+          <circle id="s-c1" class="stage-circle" cx="112" cy="92" r="34" style="stroke:#3FA968"/>
+          <text class="stage-shape-label" x="86" y="52">A-DOOR</text>
+
+          <circle id="s-c2" class="stage-circle" cx="246" cy="182" r="27" style="stroke:#3E8FD0"/>
+          <text class="stage-shape-label" x="222" y="220">A-GLAZ</text>
+
+          <circle id="s-c3" class="stage-circle" cx="360" cy="96" r="40" style="stroke:#9AA3AD"/>
+          <text class="stage-shape-label" x="338" y="50">layer 0</text>
+
+          <circle id="s-c4" class="stage-circle" cx="452" cy="248" r="22" style="stroke:#3FA968"/>
+          <text class="stage-shape-label" x="428" y="278">A-DOOR</text>
+
+          <circle id="s-c5" class="stage-circle" cx="545" cy="140" r="30" style="stroke:#3E8FD0"/>
+          <text class="stage-shape-label" x="519" y="104">A-GLAZ</text>
+
+          <circle id="s-c6" class="stage-circle" cx="196" cy="292" r="18" style="stroke:#9AA3AD"/>
+          <text class="stage-shape-label" x="172" y="318">layer 0</text>
+        </svg>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat hatched"><div class="st-k">Hatched this run</div><div class="st-v" id="stat-hatched">0</div></div>
+        <div class="stat skipped"><div class="st-k">Skipped (not circles)</div><div class="st-v" id="stat-skipped">0</div></div>
+        <div class="stat"><div class="st-k">Total hatched so far</div><div class="st-v" id="stat-total">0 / 6</div></div>
+      </div>
+
+      <div class="cmdline-label">Command line</div>
+      <div class="cmdline" id="cmdline" aria-live="polite"><span class="empty">Drag a selection box across the scene above to run CIRCHATCH.</span></div>
+
+      <div class="note tip" style="margin-top:1.1rem;">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V3l9 9-4 1 3 6-2 1-3-6-3 3Z"/></svg>
+        <div><div class="t">What to notice</div><p>The outline colors above stand in for each circle's own layer — CIRCHATCH never changes them. Every fill instead takes the color of whichever layer you picked as current before dragging, even for circles from a different layer entirely. Only the six actual circles ever get filled; the dashed rectangle, the line, the text, and the shape drawn with <span class="mono">ELLIPSE</span> are never touched no matter how you drag over them.</p></div>
+      </div>
+    </section>
+
+    <!-- 04 — REFERENCE ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="reference" data-title="Commands You'll Use">
+      <div class="sheet-head"><span class="sheet-no">04</span><h2>Commands You'll Use</h2></div>
+      <p class="lede">CIRCHATCH itself is one command. These are the native AutoCAD commands you'll reach for around it.</p>
+
+      <div class="cmd-table" id="cmd-table"></div>
+    </section>
+
+    <!-- 05 — COMMON SITUATIONS ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="situations" data-title="Common Situations">
+      <div class="sheet-head"><span class="sheet-no">05</span><h2>Common Situations</h2></div>
+      <p class="lede">The everyday cases that aren't quite "run it, select, done."</p>
+      <div id="situations-list"></div>
+    </section>
+
+    <!-- 06 — TROUBLESHOOTING ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="trouble" data-title="Troubleshooting">
+      <div class="sheet-head"><span class="sheet-no">06</span><h2>Troubleshooting</h2></div>
+      <p class="lede">If something looks off, it's almost always explained by the one line CIRCHATCH already printed to the command line — scroll up and look before assuming it's broken.</p>
+      <div id="trouble-list"></div>
+    </section>
+
+    <!-- 07 — QUICK REFERENCE ------------------------------------------------------------------------------------------------------------>
+    <section class="sheet" id="quickref" data-title="Quick Reference">
+      <div class="sheet-head"><span class="sheet-no">07</span><h2>Quick Reference</h2></div>
+      <p class="lede">The one page worth pinning up. Everything above, compressed.</p>
+
+      <div class="qr-grid" style="margin-bottom:1rem;">
+        <div class="qr-cell">
+          <h4>Before you run it</h4>
+          <div class="big">Set the current layer</div>
+          <p>That's the layer every hatch from this run lands on — not the circles' own layer.</p>
+        </div>
+        <div class="qr-cell">
+          <h4>Selection</h4>
+          <div class="big">Any method</div>
+          <p>Window, crossing, fence, pick — CIRCLE entities are kept, everything else is ignored.</p>
+        </div>
+        <div class="qr-cell">
+          <h4>Result</h4>
+          <div class="big">SOLID, associative</div>
+          <p>Moves and stretches with the circle. Command line reports how many were hatched.</p>
+        </div>
+        <div class="qr-cell">
+          <h4>Locked layer</h4>
+          <div class="big">Stops immediately</div>
+          <p>Unlock it, or make a different layer current, then run it again.</p>
+        </div>
+      </div>
+
+      <div class="qr-grid">
+        <div class="qr-cell">
+          <h4>Run it</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">CIRCHATCH</code><span>Window-select circles, solid-hatch each on the current layer</span></div>
+          </div>
+        </div>
+        <div class="qr-cell">
+          <h4>Around it</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">CLAYER</code><span>Check or set the current layer</span></div>
+            <div class="r"><code class="k">LAYER</code><span>Unlock, thaw, or turn on a layer</span></div>
+          </div>
+        </div>
+        <div class="qr-cell">
+          <h4>If something's off</h4>
+          <div class="qr-cmdlist">
+            <div class="r"><code class="k">HATCHEDIT</code><span>Adjust a hatch CIRCHATCH created</span></div>
+            <div class="r"><code class="k">DRAWORDER</code><span>Send a hatch to the back</span></div>
+          </div>
+        </div>
+      </div>
+
+      <button class="print-btn" id="print-btn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-2M6 14h12v8H6z"/></svg>
+        Print this page
+      </button>
+    </section>
+
+  </main>
+</div>
+
+<footer class="colophon">
+  <span>CIRCHATCH.lsp — internal SOP</span>
+  <span>Questions on loading or deploying the routine go to your CAD manager</span>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- theme toggle ---------------- */
+  var root = document.documentElement;
+  function applyTheme(t){
+    if(t === 'light'){ root.setAttribute('data-theme','light'); }
+    else if(t === 'dark'){ root.setAttribute('data-theme','dark'); }
+    else { root.removeAttribute('data-theme'); }
+    document.getElementById('theme-light').setAttribute('aria-pressed', t==='light' ? 'true':'false');
+    document.getElementById('theme-dark').setAttribute('aria-pressed', t==='dark' ? 'true':'false');
+  }
+  var savedTheme = null;
+  try { savedTheme = localStorage.getItem('circh-theme'); } catch(e){}
+  applyTheme(savedTheme);
+  document.getElementById('theme-light').addEventListener('click', function(){
+    applyTheme('light'); try{ localStorage.setItem('circh-theme','light'); }catch(e){}
+  });
+  document.getElementById('theme-dark').addEventListener('click', function(){
+    applyTheme('dark'); try{ localStorage.setItem('circh-theme','dark'); }catch(e){}
+  });
+
+  /* ---------------- revision date ---------------- */
+  try{
+    var d = new Date();
+    document.getElementById('tb-date').textContent =
+      d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'2-digit'});
+  }catch(e){}
+
+  /* ---------------- section nav (rail + mobile) ---------------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.sheet[data-title]'));
+  var rail = document.getElementById('rail');
+  var mrail = document.getElementById('mobile-rail-inner');
+
+  sections.forEach(function(sec, i){
+    var num = String(i+1).padStart(2,'0');
+    var b1 = document.createElement('button');
+    b1.type = 'button'; b1.setAttribute('data-target', sec.id);
+    b1.innerHTML = '<span class="num">'+num+'</span><span>'+sec.dataset.title+'</span>';
+    rail.appendChild(b1);
+
+    var b2 = document.createElement('button');
+    b2.type = 'button'; b2.setAttribute('data-target', sec.id);
+    b2.textContent = num + ' · ' + sec.dataset.title;
+    mrail.appendChild(b2);
+  });
+
+  function setCurrent(id){
+    document.querySelectorAll('.rail button, .mobile-rail button').forEach(function(b){
+      b.setAttribute('aria-current', b.getAttribute('data-target') === id ? 'true' : 'false');
+    });
+  }
+  document.querySelectorAll('.rail button, .mobile-rail button').forEach(function(b){
+    b.addEventListener('click', function(){
+      var t = document.getElementById(b.getAttribute('data-target'));
+      if(t){ t.scrollIntoView({behavior:'smooth', block:'start'}); }
+    });
+  });
+  if(sections[0]) setCurrent(sections[0].id);
+
+  if('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      var best = null, bestRatio = 0;
+      entries.forEach(function(en){
+        if(en.isIntersecting && en.intersectionRatio > bestRatio){ bestRatio = en.intersectionRatio; best = en.target; }
+      });
+      if(best) setCurrent(best.id);
+    }, { rootMargin: '-96px 0px -55% 0px', threshold: [0.1,0.25,0.5,0.75] });
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  /* ================================================================
+     03 — SELECTION + HATCH DEMO
+  ================================================================ */
+  var LAYERS = [
+    {name:'HATCH-POCH', color:'#C1392B'},
+    {name:'A-GLAZ-FILL', color:'#1D5FA8'},
+    {name:'M-FLOR', color:'#A5680B'},
+    {name:'0', color:'#57616B'}
+  ];
+  var currentLayerIdx = 0;
+
+  var SHAPES = [
+    {id:'s-c1', kind:'circle', layer:'A-DOOR', bbox:{x1:78, y1:58,  x2:146,y2:126}},
+    {id:'s-c2', kind:'circle', layer:'A-GLAZ', bbox:{x1:219,y1:155, x2:273,y2:209}},
+    {id:'s-c3', kind:'circle', layer:'0',      bbox:{x1:320,y1:56,  x2:400,y2:136}},
+    {id:'s-c4', kind:'circle', layer:'A-DOOR', bbox:{x1:430,y1:226, x2:474,y2:270}},
+    {id:'s-c5', kind:'circle', layer:'A-GLAZ', bbox:{x1:515,y1:110, x2:575,y2:170}},
+    {id:'s-c6', kind:'circle', layer:'0',      bbox:{x1:178,y1:274, x2:214,y2:310}},
+    {id:'s-rect',    kind:'other', bbox:{x1:290,y1:250, x2:366,y2:304}},
+    {id:'s-line',    kind:'other', bbox:{x1:26, y1:321, x2:179,y2:349}},
+    {id:'s-text',    kind:'other', bbox:{x1:222,y1:128, x2:258,y2:142}},
+    {id:'s-ellipse', kind:'other', bbox:{x1:548,y1:282, x2:616,y2:318}}
+  ];
+  var CIRCLE_COUNT = SHAPES.filter(function(s){ return s.kind === 'circle'; }).length;
+  var hatchedIds = {};
+
+  var swatchWrap = document.getElementById('layer-swatches');
+  LAYERS.forEach(function(layer, i){
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'layer-swatch'; b.setAttribute('aria-pressed', i===0 ? 'true':'false');
+    b.innerHTML = '<span class="dot" style="background:'+layer.color+'"></span>'+layer.name;
+    b.addEventListener('click', function(){
+      currentLayerIdx = i;
+      swatchWrap.querySelectorAll('.layer-swatch').forEach(function(sw,j){ sw.setAttribute('aria-pressed', j===i?'true':'false'); });
+    });
+    swatchWrap.appendChild(b);
+  });
+
+  var lockToggle = document.getElementById('lock-toggle');
+  var stageWrap = document.getElementById('stage-wrap');
+  var svg = document.getElementById('circ-stage');
+  var cmdline = document.getElementById('cmdline');
+  var statHatched = document.getElementById('stat-hatched');
+  var statSkipped = document.getElementById('stat-skipped');
+  var statTotal = document.getElementById('stat-total');
+
+  function logLine(text, cls){
+    if(cmdline.querySelector('.empty')) cmdline.innerHTML = '';
+    var p = document.createElement('div');
+    p.className = 'ln' + (cls ? ' '+cls : '');
+    p.textContent = text;
+    cmdline.appendChild(p);
+    cmdline.scrollTop = cmdline.scrollHeight;
+  }
+
+  function toSvgPoint(evt){
+    var pt = svg.createSVGPoint();
+    pt.x = evt.clientX; pt.y = evt.clientY;
+    var ctm = svg.getScreenCTM();
+    if(!ctm) return {x:0,y:0};
+    return pt.matrixTransform(ctm.inverse());
+  }
+
+  var dragging = false, startPt = null, marqueeEl = null;
+
+  function removeMarquee(){
+    if(marqueeEl && marqueeEl.parentNode){ marqueeEl.parentNode.removeChild(marqueeEl); }
+    marqueeEl = null;
+  }
+
+  function updateStats(justHatched, justSkipped){
+    if(typeof justHatched === 'number') statHatched.textContent = String(justHatched);
+    if(typeof justSkipped === 'number') statSkipped.textContent = String(justSkipped);
+    statTotal.textContent = Object.keys(hatchedIds).length + ' / ' + CIRCLE_COUNT;
+  }
+
+  svg.addEventListener('pointerdown', function(evt){
+    if(lockToggle.checked){
+      stageWrap.classList.remove('blocked'); void stageWrap.offsetWidth; stageWrap.classList.add('blocked');
+      var lname = LAYERS[currentLayerIdx].name;
+      logLine('Command: CIRCHATCH', 'prompt');
+      logLine('Current layer "'+lname+'" is locked - unlock it and try again.', 'err');
+      return;
+    }
+    dragging = true;
+    startPt = toSvgPoint(evt);
+    svg.setPointerCapture(evt.pointerId);
+    removeMarquee();
+    marqueeEl = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    marqueeEl.setAttribute('x', startPt.x); marqueeEl.setAttribute('y', startPt.y);
+    marqueeEl.setAttribute('width', 0); marqueeEl.setAttribute('height', 0);
+    marqueeEl.setAttribute('class', 'marquee-window');
+    svg.appendChild(marqueeEl);
+  });
+
+  svg.addEventListener('pointermove', function(evt){
+    if(!dragging || !marqueeEl) return;
+    var p = toSvgPoint(evt);
+    var x1 = Math.min(startPt.x, p.x), x2 = Math.max(startPt.x, p.x);
+    var y1 = Math.min(startPt.y, p.y), y2 = Math.max(startPt.y, p.y);
+    marqueeEl.setAttribute('x', x1); marqueeEl.setAttribute('y', y1);
+    marqueeEl.setAttribute('width', x2-x1); marqueeEl.setAttribute('height', y2-y1);
+    var isWindow = p.x >= startPt.x;
+    marqueeEl.setAttribute('class', isWindow ? 'marquee-window' : 'marquee-crossing');
+  });
+
+  function finishDrag(evt){
+    if(!dragging) return;
+    dragging = false;
+    var endPt = toSvgPoint(evt);
+    var isWindow = endPt.x >= startPt.x;
+    var sel = {
+      x1: Math.min(startPt.x, endPt.x), x2: Math.max(startPt.x, endPt.x),
+      y1: Math.min(startPt.y, endPt.y), y2: Math.max(startPt.y, endPt.y)
+    };
+    var tinyDrag = (sel.x2-sel.x1) < 4 && (sel.y2-sel.y1) < 4;
+    removeMarquee();
+    if(tinyDrag) return;
+
+    var matched = SHAPES.filter(function(s){
+      var b = s.bbox;
+      if(isWindow){
+        return b.x1 >= sel.x1 && b.x2 <= sel.x2 && b.y1 >= sel.y1 && b.y2 <= sel.y2;
+      }
+      return !(b.x2 < sel.x1 || b.x1 > sel.x2 || b.y2 < sel.y1 || b.y1 > sel.y2);
+    });
+
+    var matchedCircles = matched.filter(function(s){ return s.kind === 'circle'; });
+    var matchedOthers = matched.filter(function(s){ return s.kind === 'other'; });
+    var layer = LAYERS[currentLayerIdx];
+
+    logLine('Command: CIRCHATCH', 'prompt');
+    logLine('Select circles to solid-hatch: Specify '+(isWindow?'opposite corner':'crossing window')+': '+matched.length+' found', null);
+
+    if(matched.length === 0){
+      logLine('Nothing selected - command cancelled.', 'warn');
+      updateStats(0,0);
+      return;
+    }
+
+    matchedCircles.forEach(function(s){
+      var el = document.getElementById(s.id);
+      el.style.fill = layer.color;
+      el.classList.add('hatched');
+      hatchedIds[s.id] = layer.name;
+    });
+    matchedOthers.forEach(function(s){
+      var el = document.getElementById(s.id);
+      el.classList.remove('stage-flash'); void el.offsetWidth; el.classList.add('stage-flash');
+    });
+
+    logLine('Done - '+matchedCircles.length+' circle'+(matchedCircles.length===1?'':'s')+' hatched on layer "'+layer.name+'".', 'ok');
+    if(matchedOthers.length > 0){
+      logLine('  '+matchedOthers.length+' other object'+(matchedOthers.length===1?'':'s')+' in the selection '+(matchedOthers.length===1?'was':'were')+' not circles - skipped.', 'warn');
+    }
+    updateStats(matchedCircles.length, matchedOthers.length);
+  }
+
+  svg.addEventListener('pointerup', finishDrag);
+  svg.addEventListener('pointercancel', function(){ dragging = false; removeMarquee(); });
+
+  document.getElementById('stage-reset').addEventListener('click', function(){
+    SHAPES.forEach(function(s){
+      if(s.kind !== 'circle') return;
+      var el = document.getElementById(s.id);
+      el.style.fill = ''; el.classList.remove('hatched');
+    });
+    hatchedIds = {};
+    cmdline.innerHTML = '<span class="empty">Drag a selection box across the scene above to run CIRCHATCH.</span>';
+    updateStats(0,0);
+  });
+
+  updateStats(0,0);
+
+  /* ================================================================
+     04 — COMMANDS
+  ================================================================ */
+  var COMMANDS = [
+    {name:'CIRCHATCH', cat:'Custom', short:'Window-select circles, solid-hatch each one on the current layer.',
+      detail:'Checks that the current layer isn’t locked, prompts for a selection filtered to CIRCLE entities, then gives each one its own associative SOLID hatch on that layer. Reports how many circles were hatched and how many selected objects could not be, on one line when it finishes.'},
+    {name:'CLAYER', cat:'Native', short:'Check or set the current layer from the command line.',
+      detail:'Typing CLAYER and a layer name sets it current without opening the Layers panel. CIRCHATCH reads this the moment you run the command, not when the circles were originally drawn.'},
+    {name:'LAYER', cat:'Native', short:'Open the Layers panel to unlock, thaw, or turn on a layer.',
+      detail:'Use this to clear the locked-layer guard, or to make a different layer current by double-clicking it in the list.'},
+    {name:'HATCHEDIT', cat:'Native', short:'Adjust a hatch that CIRCHATCH already created.',
+      detail:'Pick any hatch CIRCHATCH produced — it’s an ordinary hatch object — and change its pattern, layer, or associativity after the fact.'},
+    {name:'DRAWORDER', cat:'Native', short:'Send a hatch to the back if it’s covering linework.',
+      detail:'A freshly created hatch draws on top of everything else. Select it and send it to back (or send the circle’s outline to front) if it visually buries a boundary or a leader.'}
+  ];
+  var cmdTable = document.getElementById('cmd-table');
+  COMMANDS.forEach(function(c){
+    var det = document.createElement('details');
+    det.className = 'cmd-row';
+    var s = document.createElement('summary');
+    s.innerHTML =
+      '<span class="cname">'+c.name+'</span>' +
+      '<span class="ccat'+(c.cat==='Custom'?' custom':'')+'">'+c.cat+'</span>' +
+      '<span class="cshort">'+c.short+'</span>' +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+    det.appendChild(s);
+    var body = document.createElement('div');
+    body.className = 'cdetail';
+    body.innerHTML = '<p>'+c.detail+'</p>';
+    det.appendChild(body);
+    cmdTable.appendChild(det);
+  });
+
+  /* ================================================================
+     05 — COMMON SITUATIONS
+  ================================================================ */
+  var SITUATIONS = [
+    {q:'My selection window also swept over walls, text, or a block',
+     a:'<p>Only entities of type CIRCLE are affected. Everything else caught in the same window — linework, text, blocks, dimensions — is ignored automatically, and the command line tells you how many objects that was.</p>'},
+    {q:'The round thing I selected didn’t get hatched',
+     a:'<p>It likely isn’t a true CIRCLE entity. Something drawn with the ELLIPSE command (including an isometric “circle” made in isoplane mode) is entity type ELLIPSE, not CIRCLE, and CIRCHATCH skips it on purpose — hatching it as if it were round would distort the fill. Redraw it with the actual CIRCLE command if it needs to be one, or select it and check its type with the <span class="mono">LIST</span> command if you’re not sure.</p>'},
+    {q:'The hatch showed up on the wrong layer or color',
+     a:'<p>The hatch always follows whatever layer was current the moment you ran the command — not the layer the circles themselves live on. Set the layer you actually want as current (Layers panel, or <code class="k">CLAYER</code>) before running CIRCHATCH again.</p>'},
+    {q:'The current layer is locked',
+     a:'<p>CIRCHATCH stops before it even prompts for a selection, and tells you which layer is locked. Unlock it in the Layers panel, or make a different layer current, then run the command again.</p>'},
+    {q:'I don’t want the hatch to move if the circle is stretched or moved later',
+     a:'<p>Hatches from CIRCHATCH are associative by default. Either edit the .lsp and flip the associativity flag in <span class="mono">ch:hatchcircle</span> to non-associative, or select the hatch afterward and turn off its associativity with <code class="k">HATCHEDIT</code>.</p>'},
+    {q:'The result said some circles could not be hatched',
+     a:'<p>CIRCHATCH keeps going even if one boundary fails — a circle inside a block or xref, one on a frozen layer, or some other edge case — rather than aborting the whole run. It reports the count so you know to look, but the rest of the selection is still hatched.</p>'}
+  ];
+  var sitList = document.getElementById('situations-list');
+  SITUATIONS.forEach(function(s){
+    var d = document.createElement('details'); d.className = 'qa';
+    d.innerHTML = '<summary>' + s.q +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>' +
+      '<div class="qa-body">' + s.a + '</div>';
+    sitList.appendChild(d);
+  });
+
+  /* ================================================================
+     06 — TROUBLESHOOTING
+  ================================================================ */
+  var TROUBLE = [
+    {q:'AutoCAD says CIRCHATCH is not a recognized command',
+     a:'<p>The routine hasn’t been loaded into this session yet. Load it with <span class="mono">APPLOAD</span> (or have it added to a startup suite so it loads automatically) and try again.</p>'},
+    {q:'Nothing happened after I finished selecting',
+     a:'<p>Check the command line for two things: a locked-layer message (see Sheet 05), or a report of 0 circles hatched, which means nothing in the selection was actually a CIRCLE entity — an arc, a polyline drawn to look round, or an ELLIPSE-drawn circle would all explain it.</p>'},
+    {q:'I don’t see any fill even though it reported success',
+     a:'<p>Check that the hatch’s layer isn’t frozen or turned off, and that <span class="mono">FILLMODE</span> is on (type <span class="mono">FILL</span>, set it to ON, then <span class="mono">REGEN</span>). Both would make a real SOLID hatch invisible without anything being wrong with the hatch itself.</p>'},
+    {q:'The hatch looks like it’s sitting under the circle’s own linework',
+     a:'<p>Normal — a freshly created hatch draws on top of whatever already existed, so if the layering looks backwards for your purposes, select the hatch and use <code class="k">DRAWORDER</code> to send it to the back (or bring the circle’s outline to the front).</p>'},
+    {q:'I accidentally ran it twice on the same circles',
+     a:'<p>Each run adds a new hatch on top of any existing one — harmless to look at, but it does leave extra entities in the drawing. Use <span class="mono">OVERKILL</span>, or select and delete the duplicate hatch layer manually, if that matters for file cleanliness.</p>'}
+  ];
+  var trbList = document.getElementById('trouble-list');
+  TROUBLE.forEach(function(s){
+    var d = document.createElement('details'); d.className = 'qa';
+    d.innerHTML = '<summary>' + s.q +
+      '<svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg></summary>' +
+      '<div class="qa-body">' + s.a + '</div>';
+    trbList.appendChild(d);
+  });
+
+  /* ---------------- print ---------------- */
+  document.getElementById('print-btn').addEventListener('click', function(){ window.print(); });
+
+})();
+</script>
+</body>
+</html>
