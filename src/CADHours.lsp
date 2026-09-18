@@ -653,6 +653,17 @@
                    " ms housekeeping, in this drawing only")))
   (princ (strcat "\n  Reports      : "
                  (if (ch:reports-ready) "loaded" "load on first use")))
+  ;; The name to put in AdminUsers is this one, not the person's full name -
+  ;; so print it, and say plainly which side of the list they are on.
+  ;; ch:admin-list is tested as a symbol first: an unbound symbol is nil in
+  ;; AutoLISP, so this stays printable against a Core older than 1.4.0 rather
+  ;; than erroring inside the one command used to diagnose exactly that.
+  (princ (strcat "\n  You          : " (ch:user)
+                 (cond
+                   ((null ch:admin-list)   "")
+                   ((null (ch:admin-list)) "   [AdminUsers blank - nobody restricted]")
+                   ((ch:is-admin)          "   [on AdminUsers - full reports]")
+                   (T                      "   [not on AdminUsers - own hours only]"))))
   (princ (strcat "\n  Config file  : " (if file file "(none - built-in defaults)")))
   (princ (strcat "\n  Install home : " (if (ch:home) (ch:home) "(unknown)")))
   (princ (strcat "\n  Log root     : " (ch:cfg-path "LogRoot")
@@ -665,7 +676,7 @@
                "JobPattern" "JobFromPath" "DefaultJob" "RequireManager"
                "RememberJobInDwg" "WriteEventLog" "TrackObjectEdits"
                "TrackSysVarChanges" "AutoRecover" "SweepMinutes"
-               "StaleLiveHours" "Debug")
+               "StaleLiveHours" "AdminUsers" "Debug")
     (princ (strcat "\n  " (ch:rpad k 20) ": " (ch:cfg k)))
   )
   (princ "\n")
